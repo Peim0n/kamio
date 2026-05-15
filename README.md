@@ -48,8 +48,7 @@ sudo service mosquitto start
 
 Создайте файл `my_app.py`:
 
-```python
-import asyncio
+```import asyncio
 import logging
 from synapse import SynapseApp, Device, command, telemetry, state
 from synapse.drivers import MockHardwareDriver
@@ -80,8 +79,11 @@ class SmartThermostat(Device):
 
     async def on_start(self, node):
         await super().on_start(node)
-        # Имитация чтения температуры с драйвера
-        self.start_task("read_temp", self._read_temperature_periodically())
+
+        self.create_task(
+            self._read_temperature_periodically(),
+            name="read_temp"
+        )
 
     async def _read_temperature_periodically(self):
         while True:
