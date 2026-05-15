@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synapse-core"
+version = "1.1.0"
+authors = [
+  { name="Synapse Team", email="support@synapse.io" },
+]
+description = "A declarative IoT framework for Python using MQTT"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Home Automation",
+]
+dependencies = [
+    "paho-mqtt>=2.0.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.20",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["synapse*"]

@@ -1,0 +1,28 @@
+{
+    "mqtt_broker": "mqtt://localhost:1883",
+    "app_name": "VP2420_Controller",
+    "log_level": "INFO",
+    "devices": {
+        "switcher_hall_1": {
+            "type": "aten_vp2420",
+            "config": {
+                "host": "192.168.10.50",
+                "port": 23,
+                "keepalive_interval": 15.0,
+                "auth_token": "my_secret_token_1"
+            }
+        },
+        "switcher_hall_2": {
+            "type": "aten_vp2420",
+            "config": {
+                "host": "192.168.10.51",
+                "port": 23,
+                "keepalive_interval": 15.0,
+                "auth_token": "my_secret_token_2"
+            }
+        },
+        "presentation_manager_main": {
+            "type": "presentationmanager"
+        }
+    }
+}
