@@ -147,6 +147,7 @@ python my_app.py
 *   [Примеры](docs/examples.md)
 *   [Рекомендации по развертыванию](docs/deployment.md)
 *   [Руководство для контрибьюторов](docs/contributing.md)
+*   [Полное руководство по возможностям Synapse Core](docs/Полное руководство по возможностям Synapse Core v43.md)
 
 ## Лицензия
 
