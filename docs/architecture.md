@@ -1,10 +1,10 @@
-# Архитектура Kamio Core v1.0.0a1
+# Архитектура Kamio Core v1.0.0b1
 
 ## Структура модулей
 
 ```
 Kamio/
-  app/                        # KamioApp — пакет (с v1.0.0a1)
+  app/                        # KamioApp — пакет (с v1.0.0b1)
     __init__.py               #   реэкспортирует KamioApp + все миксины
     _application.py           #   класс KamioApp
     mixins/
@@ -22,9 +22,9 @@ Kamio/
   config.py                   # Config — JSON-файл + Kamio_* env-переменные
   discovery.py                # HADiscovery — Home Assistant MQTT Discovery (lazy)
   core/
-    transport/                # namespace-пакет транспортного слоя (с v1.0.0a1)
+    transport/                # namespace-пакет транспортного слоя (с v1.0.0b1)
       __init__.py             #   реэкспорт: MqttConnection, nodes, topics, Envelope
-    automation/               # namespace-пакет слоя автоматизации (с v1.0.0a1)
+    automation/               # namespace-пакет слоя автоматизации (с v1.0.0b1)
       __init__.py             #   реэкспорт: Rule, RuleEngine, RuleEvent, EventBus, HooksManager
     device_meta.py            # DeviceMeta — metaclass: Kamio_FIELDS/COMMANDS/EVENTS
     envelope.py               # Envelope — JSON-обёртка MQTT-сообщения
@@ -191,11 +191,11 @@ event(description)                           # события (emit-only, не �
 - `Kamio_EVENTS` — event (ключ → `Field`)
 - `Kamio_COMMANDS` — методы с `@command` (имя → callable)
 
-## Декаплинг Device от KamioApp (v1.0.0a1)
+## Декаплинг Device от KamioApp (v1.0.0b1)
 
-До v1.0.0a1 `Device.handle_state()` напрямую вызывал `self.app.event_bus` и `self.app.rules`, что создавало жёсткую связность.
+До v1.0.0b1 `Device.handle_state()` напрямую вызывал `self.app.event_bus` и `self.app.rules`, что создавало жёсткую связность.
 
-Начиная с v1.0.0a1 `Device` использует инжектируемые callbacks:
+Начиная с v1.0.0b1 `Device` использует инжектируемые callbacks:
 
 ```python
 # Инжектируется DeviceHandler при создании:
@@ -289,4 +289,4 @@ async def read(field_name, params=None)              # чтение значен
 | v1.6.0 | Plugin System (`Plugin`, `PluginLoader`) | ✅ Готово |
 | v1.7.0 | Hot-Reload (`HotReloadManager`) | ✅ Готово |
 | v1.8.0 | Custom MQTT Nodes (`CustomNode`, `CustomNodeManager`) | ✅ Готово |
-| v1.0.0a1 | Архитектурный рефакторинг: декаплинг, новая структура пакетов | ✅ Готово |
+| v1.0.0b1 | Архитектурный рефакторинг: декаплинг, новая структура пакетов | ✅ Готово |

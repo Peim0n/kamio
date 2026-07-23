@@ -1,7 +1,7 @@
-# Kamio v1.0.0a1
+# Kamio v1.0.0b1
 
 ![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)
-![Version](https://img.shields.io/badge/version-1.0.0a1--alpha-blue.svg)
+![Version](https://img.shields.io/badge/version-1.0.0b1--beta-blue.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 ![MQTT](https://img.shields.io/badge/MQTT-v5-orange.svg)
 ![Tests](https://github.com/Peim0n/kamio/actions/workflows/ci.yml/badge.svg)
@@ -172,7 +172,7 @@ pytest tests/stress/            # только stress
 ## Документация
 
 - [API](docs/api.md) — справочник по всем классам и методам
-- [Архитектура](docs/architecture.md) — детальный обзор архитектуры v1.0.0a1
+- [Архитектура](docs/architecture.md) — детальный обзор архитектуры v1.0.0b1
 
 ## Лицензия
 

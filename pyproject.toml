@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kamio"
-version = "1.0.0a1"
+version = "1.0.0b1"
 description = "Декларативный асинхронный IoT-фреймворк для Python с поддержкой MQTT"
 readme = "README.md"
 license = {text = "Apache-2.0"}

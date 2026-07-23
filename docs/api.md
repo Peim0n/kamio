@@ -1,6 +1,6 @@
-# API Документация Kamio Core v1.0.0a1
+# API Документация Kamio Core v1.0.0b1
 
-Эта документация описывает все публичные классы и функции фреймворка Kamio Core v1.0.0a1.
+Эта документация описывает все публичные классы и функции фреймворка Kamio Core v1.0.0b1.
 
 ## Содержание
 
@@ -17,7 +17,7 @@
 - [HADiscovery](#hadiscovery)
 - [Драйверы](#драйверы-Kamiodrivers)
 - [Внутренние компоненты](#внутренние-компоненты-Kamiocore)
-- [Namespace-пакеты v1.0.0a1](#namespace-пакеты-v190)
+- [Namespace-пакеты v1.0.0](#namespace-пакеты-v190)
 
 ## `KamioApp`
 
@@ -57,7 +57,7 @@ class KamioApp:
             **kwargs:      Дополнительные параметры для MqttConnection
                            (transport, tls, reconnect_min_delay, reconnect_max_delay).
 
-        Примечание v1.0.0a1:
+        Примечание v1.0.0b1:
             HADiscovery НЕ создаётся при инициализации. Вызовите enable_ha_discovery()
             чтобы активировать интеграцию с Home Assistant.
         """
@@ -1217,7 +1217,7 @@ Kamio_LOG_LEVEL         # Уровень логирования
 > отображение Kamio-полей на компоненты Home Assistant (sensor, switch и т.д.).
 > Полная поддержка discovery находится в разработке.
 
-**Новое в v1.0.0a1:** `HADiscovery` создаётся **lazily** — только при вызове `app.enable_ha_discovery()`.
+**Новое в v1.0.0b1:** `HADiscovery` создаётся **lazily** — только при вызове `app.enable_ha_discovery()`.
 До этого `app.ha_discovery is None`.
 
 Используйте методы `KamioApp`:
@@ -1486,7 +1486,7 @@ class StateManager:
 ### `RuleEngine`
 Движок для выполнения правил автоматизации.
 
-**Новое в v1.0.0a1:** Индекс `_event_rules_by_type` поддерживается актуальным в `add_rule`/`remove_rule`
+**Новое в v1.0.0b1:** Индекс `_event_rules_by_type` поддерживается актуальным в `add_rule`/`remove_rule`
 в любой момент — избыточный `_rebuild_index()` при `start()` удалён. `remove_rule` защищён от двойного удаления.
 
 ```python
@@ -1617,7 +1617,7 @@ TOPIC_MAP: Dict[EnvelopeType, Callable[[str], str]]
 ### `handlers`
 Содержит `DeviceHandler`, который диспетчеризирует входящие сообщения MQTT для конкретного устройства.
 
-**Новое в v1.0.0a1:** При создании `DeviceHandler` инжектирует в `Device` два callback-а:
+**Новое в v1.0.0b1:** При создании `DeviceHandler` инжектирует в `Device` два callback-а:
 - `device._on_state_changed(device_id, field, old, new)` → `app.event_bus.publish(...)`
 - `device._on_rules_trigger(device_id, changes)` → `app.rules.handle_device_update(...)`
 
@@ -1643,9 +1643,9 @@ class DeviceHandler:
 
 ---
 
-## Namespace-пакеты v1.0.0a1
+## Namespace-пакеты v1.0.0b1
 
-С версии v1.0.0a1 введены два namespace-пакета для логической группировки:
+С версии v1.0.0b1 введены два namespace-пакета для логической группировки:
 
 ### `Kamio.core.transport`
 
@@ -1683,7 +1683,7 @@ from kamio.core.automation import (
 
 ---
 
-## Дополнения и уточнения API v1.0.0a1
+## Дополнения и уточнения API v1.0.0b1
 
 ### `RuleEvent`
 

@@ -10,7 +10,7 @@ from .core.custom_nodes import CustomNode, CustomNodeManager
 from .core.hot_reload import HotReloadManager
 from .plugins.base import Plugin
 
-__version__ = "1.0.0a1"
+__version__ = "1.0.0b1"
 __all__ = [
     "KamioApp",
     "Device",

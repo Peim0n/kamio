@@ -2,7 +2,7 @@
 
 All notable changes to Kamio will be documented in this file.
 
-## [1.0.0a1] - 2026-07-23
+## [1.0.0b1] - 2026-07-23
 
 ### Added
 - **Декларативные устройства** — поля `state`, `telemetry`, `event`, `config` через аннотации Python

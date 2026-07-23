@@ -279,7 +279,7 @@ class RuleEngine:
         """Rebuild the event-rule index from scratch.
 
         .. deprecated::
-            Since v1.0.0a1 the index is kept in sync by :meth:`add_rule` /
+            Since v1.0.0b1 the index is kept in sync by :meth:`add_rule` /
             :meth:`remove_rule`. This method is retained for external callers
             and for rollback by :class:`HotReloadManager`.
         """
