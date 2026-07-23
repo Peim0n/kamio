@@ -1,33 +1,117 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=64.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "synapse-core"
-version = "1.1.0"
-authors = [
-  { name="Synapse Team", email="support@synapse.io" },
-]
-description = "A declarative IoT framework for Python using MQTT"
+name = "kamio"
+version = "1.0.0a1"
+description = "Декларативный асинхронный IoT-фреймворк для Python с поддержкой MQTT"
 readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Данил Сытников", email = "d.sytnikov@int-sys.ru"},
+]
+keywords = ["iot", "mqtt", "home-automation", "asyncio", "framework", "smart-home"]
 requires-python = ">=3.9"
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Topic :: Home Automation",
+    "Topic :: Internet of Things",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
 ]
+
 dependencies = [
-    "paho-mqtt>=2.0.0",
+    "gmqtt==0.7.0",
 ]
 
 [project.optional-dependencies]
-test = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.20",
+# Драйверы
+gpio = ["gpiod>=1.6.0"]
+serial = ["pyserial>=3.5"]
+http = ["aiohttp>=3.8.0"]
+all-drivers = ["gpiod>=1.6.0", "pyserial>=3.5", "aiohttp>=3.8.0"]
+
+# Разработка
+dev = [
+    "black>=23.0",
+    "isort>=5.12",
+    "mypy>=1.0",
+    "pylint>=2.17",
 ]
+
+# Тестирование
+test = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.11",
+]
+
+# Полный набор
+full = [
+    "gpiod>=1.6.0",
+    "pyserial>=3.5",
+    "aiohttp>=3.8.0",
+    "black>=23.0",
+    "isort>=5.12",
+    "mypy>=1.0",
+    "pylint>=2.17",
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.11",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Peim0n/kamio"
+"Repository" = "https://github.com/Peim0n/kamio.git"
+"Documentation" = "https://github.com/Peim0n/kamio#readme"
+"Bug Tracker" = "https://github.com/Peim0n/kamio/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["synapse*"]
+include = ["kamio*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+kamio = ["py.typed"]
+
+# Black
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312", "py313"]
+include = '\.pyi?$'
+
+# isort
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["kamio"]
+
+# mypy
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+# pytest
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/stress"]
+asyncio_mode = "auto"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "stress: long-running load and stability tests",
+]

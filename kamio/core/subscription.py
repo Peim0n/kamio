@@ -1,0 +1,118 @@
+from __future__ import annotations
+import asyncio
+import inspect
+import logging
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+class PriorityRegistry:
+    """
+    Generic priority-ordered registry for callbacks/hooks.
+
+    Items are stored as tuples ``(priority, value)`` and returned in descending
+    priority order.  Supports registration, removal by identity, listing,
+    and clearing by key or globally.
+    """
+
+    def __init__(self) -> None:
+        # {key: [(priority, value), ...]}
+        self._items: Dict[str, List[Tuple[int, Any]]] = {}
+
+    def add(self, key: str, value: Any, priority: int = 0) -> None:
+        """Register a value under key with the given priority."""
+        if key not in self._items:
+            self._items[key] = []
+        self._items[key].append((priority, value))
+        self._items[key].sort(key=lambda x: x[0], reverse=True)
+
+    def remove(self, key: str, value: Any, predicate: Optional[Callable[[Any, Any], bool]] = None) -> None:
+        """
+        Remove values under key.
+
+        ``predicate(stored_value, value)`` should return ``True`` for items that
+        should be *kept* (default: keep items whose identity differs from ``value``).
+        """
+        if key not in self._items:
+            return
+        if predicate is None:
+            predicate = lambda stored, ref: stored is not ref
+        self._items[key] = [
+            (p, v) for p, v in self._items[key] if predicate(v, value)
+        ]
+
+    def list(self, key: str) -> List[Any]:
+        """Return all values registered under key in priority order."""
+        return [v for _, v in self._items.get(key, [])]
+
+    def keys(self) -> List[str]:
+        """Return all keys that have at least one registered value."""
+        return [k for k, items in self._items.items() if items]
+
+    def clear(self, key: Optional[str] = None) -> None:
+        """Clear values for a specific key, or all keys if None."""
+        if key is None:
+            self._items.clear()
+        else:
+            self._items.pop(key, None)
+
+
+class AsyncPriorityDispatcher:
+    """
+    Shared base for async callback dispatchers.
+
+    Subclasses provide public naming (subscribe/register) and optional
+    per-callback filtering/wrapping by overriding ``_prepare_callback``
+    and ``_invoke``.
+    """
+
+    def __init__(self, logger_name: str) -> None:
+        self._registry = PriorityRegistry()
+        self.logger = logging.getLogger(logger_name)
+
+    def _register(self, event_type: str, callback: Any, priority: int = 0) -> None:
+        self._registry.add(event_type, callback, priority=priority)
+
+    def _unregister(
+        self,
+        event_type: str,
+        callback: Any,
+        predicate: Optional[Callable[[Any, Any], bool]] = None,
+    ) -> None:
+        self._registry.remove(event_type, callback, predicate=predicate)
+
+    def _list(self, event_type: str) -> List[Any]:
+        return self._registry.list(event_type)
+
+    def _event_types(self) -> List[str]:
+        return self._registry.keys()
+
+    def _clear(self, event_type: Optional[str] = None) -> None:
+        self._registry.clear(event_type)
+
+    async def _dispatch(
+        self,
+        event_type: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        """Invoke all callbacks for event_type in priority order."""
+        for callback in self._registry.list(event_type):
+            try:
+                prepared = self._prepare_callback(callback)
+                await self._invoke(prepared, *args, **kwargs)
+            except Exception as e:
+                self.logger.error(
+                    f"Error in callback for event '{event_type}': {e}",
+                    exc_info=True,
+                )
+
+    def _prepare_callback(self, callback: Any) -> Any:
+        """Optional hook for wrapping/filtering callbacks."""
+        return callback
+
+    async def _invoke(self, callback: Any, *args: Any, **kwargs: Any) -> None:
+        """Invoke a single callback, supporting sync and async callables."""
+        if inspect.iscoroutinefunction(callback):
+            await callback(*args, **kwargs)
+        else:
+            callback(*args, **kwargs)

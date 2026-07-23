@@ -1,160 +1,180 @@
-# Synapse Core v43: Фреймворк для IoT-приложений на Python
+# Kamio v1.0.0a1
 
 ![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
+![Version](https://img.shields.io/badge/version-1.0.0a1--alpha-blue.svg)
+![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
+![MQTT](https://img.shields.io/badge/MQTT-v5-orange.svg)
+![Tests](https://github.com/Peim0n/kamio/actions/workflows/ci.yml/badge.svg)
 
-## Описание
+**Kamio** — декларативный асинхронный IoT-фреймворк для Python на базе MQTT. Описывайте устройства классами, подключайте оборудование драйверами, автоматизируйте правилами.
 
-**Synapse Core v43** — это мощный, декларативный и асинхронный фреймворк для разработки IoT-приложений на Python, использующий протокол MQTT для обмена сообщениями. Он предоставляет интуитивно понятный API для определения устройств, их состояний, телеметрии и команд, а также мощный механизм правил для автоматизации взаимодействий. Фреймворк разработан с учетом асинхронности (`asyncio`), что обеспечивает высокую производительность, отзывчивость и готовность к работе с реальным оборудованием.
+## Возможности
 
-## Основные возможности
-
-*   **Декларативное определение устройств**: Легкое описание IoT-устройств с помощью классов Python, аннотаций и специальных функций (`telemetry`, `state`, `command`, `event`, `config`).
-*   **Поддержка аппаратных драйверов**: Встроенная поддержка различных низкоуровневых драйверов для взаимодействия с реальным оборудованием (GPIO, Telnet, Serial, HTTP, Mock).
-*   **MQTT-интеграция**: Встроенная поддержка MQTT v5 для надежной и эффективной коммуникации с брокерами, включая обратную совместимость с legacy-топиками.
-*   **Асинхронность**: Полное использование `asyncio` для неблокирующей обработки событий и параллельных операций.
-*   **Система правил**: Гибкий движок правил для создания логики автоматизации на основе изменений состояния или телеметрии устройств, а также по интервалу.
-*   **Управление состоянием**: Централизованное управление состоянием устройств и корреляция команд/ответов.
-*   **Расширяемость**: Модульная архитектура, позволяющая легко добавлять новые драйверы и функциональность.
-*   **Home Assistant Discovery**: Поддержка автоматического обнаружения устройств в Home Assistant через MQTT.
-*   **Конфигурация**: Гибкое управление конфигурацией через файлы JSON и переменные окружения.
+- **Декларативные устройства** — поля `state`, `telemetry`, `event`, `config` через аннотации Python
+- **Драйверы** — GPIO, Serial, Telnet, HTTP, UDP, Modbus TCP, Mock (latency/failure simulation)
+- **MQTT v5** — надёжная коммуникация, авто-реконнект, обратная совместимость с legacy-топиками
+- **Асинхронность** — полностью `asyncio`, никаких блокирующих вызовов в event loop
+- **Правила автоматизации** — реакция на изменения полей и периодические интервалы
+- **Plugin System** — изолированные плагины с автоматическим cleanup через `PluginContext`
+- **Hot-Reload** — перезагрузка правил и устройств без остановки приложения
+- **Custom MQTT Nodes** — произвольные MQTT-узлы с маршрутизацией сообщений
+- **Home Assistant Discovery** — lazy-init, активируется только при вызове `enable_ha_discovery()`
+- **Конфигурация** — JSON-файлы + переменные окружения `Kamio_*`
 
 ## Установка
 
-Synapse Core v43 доступен для установки через `pip`.
-
 ```bash
-pip install synapse-core
+pip install kamio
 ```
 
-### Зависимости
+### Требования
 
-Для работы фреймворка требуется установленный MQTT-брокер (например, Mosquitto).
+- Python 3.9+
+- MQTT брокер (рекомендуется Mosquitto)
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y mosquitto mosquitto-clients
-sudo service mosquitto start
+# Ubuntu/Debian
+sudo apt-get install mosquitto mosquitto-clients
+# macOS
+brew install mosquitto
+# Windows: https://mosquitto.org/download/
 ```
 
-Для использования некоторых драйверов могут потребоваться дополнительные библиотеки:
+### Дополнительные зависимости
 
-*   **GPIOChipDriver**: `pip install gpiod`
-*   **SerialDriver**: `pip install pyserial`
-*   **HTTPDeviceDriver**: `pip install aiohttp`
+```bash
+pip install kamio[gpio]           # GPIO (gpiod)
+pip install kamio[serial]          # Serial (pyserial)
+pip install kamio[http]            # HTTP (aiohttp)
+pip install kamio[all-drivers]   # все внешние зависимости драйверов (gpiod, pyserial, aiohttp)
+pip install kamio[dev]            # форматирование, типизация
+pip install kamio[test]           # pytest, pytest-asyncio
+```
+
+> `UDPDriver`, `TelnetDriver` и `ModbusTCPDriver` используют только стандартную библиотеку Python и доступны без extras.
 
 ## Быстрый старт
 
-Создайте файл `my_app.py`:
+```python
+import asyncio
+from kamio import KamioApp, Device, command, state, telemetry
 
-```import asyncio
-import logging
-from synapse import SynapseApp, Device, command, telemetry, state
-from synapse.drivers import MockHardwareDriver
+app = KamioApp(mqtt_broker="mqtt://localhost:1883")
 
-# 1. Инициализация приложения
-app = SynapseApp(
-    mqtt_broker="mqtt://localhost:1883",
-    client_id="my_iot_app",
-    log_level=logging.INFO
-)
 
-# 2. Определение модели устройства с драйвером
-@app.device
-class SmartThermostat(Device):
-    """Умный термостат с телеметрией температуры и целевым состоянием, использующий MockHardwareDriver."""
-    temp: float = telemetry(unit="°C", freq="5s")
-    target: float = state(default=22.0, writable=True)
-
-    def __init__(self, **kwargs):
-        super().__init__(driver=MockHardwareDriver(initial_state={"temp": 20.0}), **kwargs)
+class SmartLight(Device):
+    power:      bool  = state(default=False, writable=True)
+    brightness: int   = state(default=100, min=0, max=255, writable=True)
+    energy_wh:  float = telemetry(default=0.0, unit="Wh")
 
     @command
-    async def set_target(self, value: float):
-        self.logger.info(f"Обновление целевой температуры до {value}°C")
-        self.target = value
-        await self.request_state_sync()
-        return {"status": "ok", "target": self.target}
+    async def toggle(self):
+        self.power = not self.power
+        return {"power": self.power}
 
-    async def on_start(self, node):
-        await super().on_start(node)
 
-        self.create_task(
-            self._read_temperature_periodically(),
-            name="read_temp"
-        )
+class MotionSensor(Device):
+    motion_detected: bool = state(default=False, writable=True)
 
-    async def _read_temperature_periodically(self):
-        while True:
-            if self.driver:
-                read_temp = await self.driver.read("temp")
-                if read_temp is not None:
-                    self.temp = float(read_temp)
-            await asyncio.sleep(5) # Читаем каждые 5 секунд
 
-# 3. Правила автоматизации
-@app.rule(device=SmartThermostat, fields=["temp"], description="Контроль климата")
-async def on_temp_change(snapshot: dict, app_instance: SynapseApp):
-    """Реагирование на изменения температуры."""
-    device_id = snapshot["device_id"]
-    current_temp = snapshot.get("update", {}).get("temp")
-    if current_temp is not None:
-        thermostat = app_instance.devices.get(device_id)
-        if thermostat and isinstance(thermostat, SmartThermostat):
-            if current_temp > thermostat.target + 2.0:
-                app_instance.logger.warning(f"[{device_id}] Высокая температура: {current_temp}°C, целевая: {thermostat.target}°C. Включаем охлаждение.")
-                # Здесь можно отправить команду на устройство, например, включить кондиционер
-            elif current_temp < thermostat.target - 2.0:
-                app_instance.logger.info(f"[{device_id}] Низкая температура: {current_temp}°C, целевая: {thermostat.target}°C. Включаем обогрев.")
-                # Здесь можно отправить команду на устройство, например, включить обогрев
+@app.rule(device=MotionSensor, fields=["motion_detected"])
+async def on_motion(event, app):
+    if event.data["motion_detected"]:
+        light = app.devices.get("living_room")
+        if light:
+            await light.handle_state({"power": True, "brightness": 200})
 
-# 4. Запуск приложения
+
+async def main():
+    # Можно передать драйвер: Serial/Telnet/HTTP/UDP/Modbus TCP
+    # await app.add_device("living_room", SmartLight, driver=TelnetDriver("10.0.0.10"))
+    await app.add_device("living_room", SmartLight)
+    await app.add_device("hall_sensor", MotionSensor)
+    await app.start()
+
+
 if __name__ == "__main__":
-    async def main():
-        # Создание экземпляра устройства
-        await app.create_device("room_thermostat", "smartthermostat")
-        await app.start()
-        app.logger.info("Приложение Smart Thermostat запущено. Press Ctrl+C to stop.")
-
-        # Пример вызова команды через приложение (обычно это делается извне)
-        await asyncio.sleep(10)
-        app.logger.info("Отправка команды: set_target(24.0)")
-        thermostat_instance = app.devices["room_thermostat"]
-        await thermostat_instance.set_target(24.0)
-
-        while True:
-            await asyncio.sleep(3600) # Работаем час
-
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        app.logger.info("Приложение остановлено пользователем.")
-    finally:
-        asyncio.run(app.stop())
+    asyncio.run(main())
+    # ИЛИ блокирующий запуск с обработкой SIGINT/SIGTERM:
+    # app.run()
 ```
 
-Запустите приложение:
+## Примеры использования
+
+### Плагины
+
+```python
+from kamio.plugins.builtin.metrics_plugin import MetricsPlugin
+
+metrics = await app.load_plugin(MetricsPlugin)
+print(metrics.get_counter("device_state_changed"))
+```
+
+### Hot-reload правил
+
+```python
+app.watch_directory("rules/", "*.py", app.hot_reload.make_rules_handler())
+app.enable_hot_reload()
+```
+
+### Home Assistant Discovery
+
+```python
+app.enable_ha_discovery(prefix="homeassistant")
+# HADiscovery создаётся только здесь, не при инициализации KamioApp
+```
+
+### Кастомный MQTT-узел
+
+```python
+from kamio.core.custom_nodes import CustomNode
+
+class BridgeNode(CustomNode):
+    async def handle_message(self, topic: str, payload: bytes):
+        print(f"Bridge received: {topic}")
+
+app.register_custom_node("bridge", BridgeNode(app.mqtt_client, "bridge"))
+```
+
+### Конфигурация через файл
+
+```python
+app = KamioApp(config_path="config.json")
+```
+
+```json
+{
+  "mqtt_broker": "mqtt://broker.local:1883",
+  "log_level": "INFO"
+}
+```
+
+Или через переменные окружения:
+```bash
+Kamio_MQTT_BROKER=mqtt://broker.local:1883
+Kamio_LOG_LEVEL=DEBUG
+```
+
+## Структура тестов
+
+```
+tests/
+  unit/         # изолированные тесты компонентов
+  stress/       # тесты под нагрузкой
+```
 
 ```bash
-python my_app.py
+pytest                          # все тесты
+pytest tests/unit/              # только unit
+pytest tests/stress/            # только stress
 ```
 
 ## Документация
 
-*   [API Документация](docs/api.md)
-*   [Руководство пользователя](docs/user_guide.md)
-*   [Обзор архитектуры](docs/architecture.md)
-*   [Драйверы](docs/drivers.md)
-*   [Примеры](docs/examples.md)
-*   [Рекомендации по развертыванию](docs/deployment.md)
-*   [Руководство для контрибьюторов](docs/contributing.md)
-*   [Полное руководство по возможностям Synapse Core](docs/Полное руководство по возможностям Synapse Core v43.md)
+- [API](docs/api.md) — справочник по всем классам и методам
+- [Архитектура](docs/architecture.md) — детальный обзор архитектуры v1.0.0a1
 
 ## Лицензия
 
-Synapse Core v43 распространяется под лицензией MIT. См. файл `LICENSE` для получения дополнительной информации.
+Apache-2.0 — см. файл [LICENSE](LICENSE)
 
-## Вклад
-
-Мы приветствуем вклад в развитие Synapse Core. Пожалуйста, ознакомьтесь с [Руководством для контрибьюторов](docs/contributing.md) перед началом работы.
