@@ -2,6 +2,11 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.0b3] - 2026-08-01
+
+### Fixed
+- **Cross-platform test suite** — replaced real MQTT broker dependency with an in-memory broker (`InMemoryBroker`) in `tests/conftest.py`. On Linux, `gmqtt.Client.connect` opens a TCP socket synchronously and raises `ConnectionRefusedError` when no broker is listening on `127.0.0.1:1883`, causing 15 stress tests and 4 unit tests (`test_two_apps_interaction`) to fail on Ubuntu CI. The in-memory broker routes pub/sub between all `KamioApp` instances with proper MQTT wildcard matching (`+` single level, `#` multi level) and self-delivery (real MQTT clients receive their own published messages).
+
 ## [1.0.0b1] - 2026-07-23
 
 ### Added

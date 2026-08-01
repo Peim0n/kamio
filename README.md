@@ -1,7 +1,7 @@
-# Kamio v1.0.0b2
+# Kamio v1.0.0b3
 
 ![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)
-![Version](https://img.shields.io/badge/version-1.0.0b2--beta-blue.svg)
+![Version](https://img.shields.io/badge/version-1.0.0b3--beta-blue.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 ![MQTT](https://img.shields.io/badge/MQTT-v5-orange.svg)
 ![Coverage](https://img.shields.io/badge/coverage-94%25-brightgreen.svg)
@@ -173,8 +173,8 @@ pytest --cov=kamio              # with coverage report
 
 ## Documentation
 
-- [API](docs/api.md) — reference for all classes and methods v1.0.0b2
-- [Architecture](docs/architecture.md) — detailed architecture overview v1.0.0b2
+- [API](docs/api.md) — reference for all classes and methods v1.0.0b3
+- [Architecture](docs/architecture.md) — detailed architecture overview v1.0.0b3
 - [CHANGELOG](CHANGELOG.md) — changelog
 
 ## License
