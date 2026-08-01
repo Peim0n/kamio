@@ -2,6 +2,12 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.0b4] - 2026-08-01
+
+### Fixed
+- **Python version requirement** — corrected `requires-python` from `>=3.9` to `>=3.10` in PyPI metadata. The codebase uses `dataclass(slots=True)` which requires Python 3.10+. Updated README badge and mypy config accordingly.
+- Removed Python 3.9 from CI matrix and classifiers.
+
 ## [1.0.0b3] - 2026-08-01
 
 ### Fixed

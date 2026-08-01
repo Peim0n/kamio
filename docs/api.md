@@ -1,6 +1,6 @@
-# API Documentation Kamio Core v1.0.0b3
+# API Documentation Kamio Core v1.0.0b4
 
-This documentation describes all public classes and functions of the Kamio Core v1.0.0b3 framework.
+This documentation describes all public classes and functions of the Kamio Core v1.0.0b4 framework.
 
 ## Table of Contents
 
@@ -1728,7 +1728,7 @@ from kamio.core.automation import (
 
 ---
 
-*Updated for Kamio Core v1.0.0b3*
+*Updated for Kamio Core v1.0.0b4*
 
 ---
 

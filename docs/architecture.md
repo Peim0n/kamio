@@ -1,4 +1,4 @@
-# Kamio Core Architecture v1.0.0b3
+# Kamio Core Architecture v1.0.0b4
 
 ## Module Structure
 
@@ -284,6 +284,7 @@ The driver receives `command_name` and `params` (including `value`), allowing a 
 | v1.0.0b2 | Bugfix: PluginLoader circular dependency detection | ✅ Done |
 | v1.0.0b2 | Test coverage 94% (751 unit + 16 stress tests) | ✅ Done |
 | v1.0.0b3 | Bugfix: in-memory MQTT broker for cross-platform test suite | ✅ Done |
+| v1.0.0b4 | Fix: correct Python version requirement (3.10+) in PyPI metadata | ✅ Done |
 
 ## Notable Changes
 
