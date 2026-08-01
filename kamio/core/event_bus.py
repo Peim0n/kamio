@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import inspect
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -70,11 +71,12 @@ class EventBus(AsyncPriorityDispatcher):
         """
         Publish an event to all matching subscribers.
 
-        Automatically adds 'timestamp' to data if not present.
-        Applies per-subscriber filter before calling.
+        Automatically adds 'timestamp' to data if not present (or if explicitly
+        set to ``None``).  Applies per-subscriber filter before calling.
         Errors in callbacks are caught, logged, and do not stop others.
         """
-        data = {"timestamp": data.get("timestamp", _now()), **data}
+        if not data.get("timestamp"):
+            data = {"timestamp": _now(), **data}
         await self._dispatch(event_type, data)
 
     async def _invoke(self, item: Any, data: Dict[str, Any]) -> None:
@@ -84,9 +86,7 @@ class EventBus(AsyncPriorityDispatcher):
             try:
                 passes = filter_fn(data)
             except Exception as fe:
-                self.logger.error(
-                    f"Error in filter for subscriber '{callback.__name__}': {fe}"
-                )
+                self.logger.error(f"Error in filter for subscriber '{callback.__name__}': {fe}")
                 return
             if not passes:
                 return

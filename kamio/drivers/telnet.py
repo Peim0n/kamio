@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import asyncio
 from typing import Any, Dict, Optional
+
 from .base import BaseDriver
 
 
@@ -23,6 +25,7 @@ class TelnetDriver(BaseDriver):
         self._lock = asyncio.Lock()  # Lock to prevent concurrent commands
 
     async def connect(self):
+        """Establish a Telnet connection to the configured host and port."""
         try:
             self.reader, self.writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port), timeout=self.timeout
@@ -33,12 +36,17 @@ class TelnetDriver(BaseDriver):
             raise
 
     async def disconnect(self):
+        """Close the Telnet connection if open."""
         if self.writer:
-            self.writer.close()
-            await self.writer.wait_closed()
-            self.reader = None
-            self.writer = None
-            self.logger.info("Telnet disconnected")
+            try:
+                self.writer.close()
+                await self.writer.wait_closed()
+            except Exception as e:
+                self.logger.warning(f"Error closing Telnet connection: {e}")
+            finally:
+                self.reader = None
+                self.writer = None
+                self.logger.info("Telnet disconnected")
 
     async def _ensure_connected(self) -> None:
         """Reconnect if the stream is closed or missing."""
@@ -56,6 +64,7 @@ class TelnetDriver(BaseDriver):
                 await asyncio.sleep(self._reconnect_delay_base * (2 ** (attempt - 1)))
 
     async def execute(self, command_name: str, params: dict) -> dict:
+        """Send a command over Telnet and read the response."""
         async with self._lock:  # Prevent concurrent commands
             await self._ensure_connected()
             assert self.writer is not None and self.reader is not None
@@ -89,23 +98,25 @@ class TelnetDriver(BaseDriver):
             return {"status": "ok", "command": command_name, "response": response}
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        """Send a query command and read the response over Telnet."""
         params = params or {}
-        await self._ensure_connected()
-        assert self.reader is not None
+        async with self._lock:  # Prevent concurrent commands
+            await self._ensure_connected()
+            assert self.reader is not None and self.writer is not None
 
-        cmd = params.get("command", field_name)
-        if cmd:
-            value = params.get("value")
-            if value is not None:
-                cmd = f"{cmd} {value}"
-            if not cmd.endswith("\n"):
-                cmd += "\n"
-            self.writer.write(cmd.encode())
-            await self.writer.drain()
+            cmd = params.get("command", field_name)
+            if cmd:
+                value = params.get("value")
+                if value is not None:
+                    cmd = f"{cmd} {value}"
+                if not cmd.endswith("\n"):
+                    cmd += "\n"
+                self.writer.write(cmd.encode())
+                await self.writer.drain()
 
-        try:
-            line = await asyncio.wait_for(self.reader.readline(), timeout=self.timeout)
-            return {"status": "ok", "field": field_name, "response": line.decode().strip()}
-        except asyncio.TimeoutError:
-            self.logger.warning("Telnet read timeout")
-            return {"status": "ok", "field": field_name, "response": ""}
+            try:
+                line = await asyncio.wait_for(self.reader.readline(), timeout=self.timeout)
+                return {"status": "ok", "field": field_name, "response": line.decode().strip()}
+            except asyncio.TimeoutError:
+                self.logger.warning("Telnet read timeout")
+                return {"status": "ok", "field": field_name, "response": ""}

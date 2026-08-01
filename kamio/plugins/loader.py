@@ -1,11 +1,11 @@
 from __future__ import annotations
+
 import asyncio
 import importlib
 import importlib.util
-import inspect
 import logging
 import os
-from typing import Any, Callable, Dict, List, Optional, Set, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Type
 
 from kamio.plugins.base import Plugin
 
@@ -23,16 +23,20 @@ class PluginContext:
 
     Tracks all event subscriptions, hooks, rules, and tasks registered by the
     plugin so they can be cleanly removed on unload.  Exposes a duck-typed
-    subset of :class:`EventBus` and :class:`HooksManager`, so legacy plugins
-    that call ``event_bus.subscribe(...)`` / ``hooks.register(...)`` continue
-    to work without monkey-patching application objects.
+    subset of :class:`EventBus` and :class:`HooksManager` so plugins can call
+    ``context.subscribe(...)`` / ``context.register_hook(...)`` directly.
     """
 
     def __init__(self, app: "KamioApp", plugin_name: str) -> None:
+        """Create a scoped context for a plugin.
+
+        Tracks all subscriptions, hooks, rules, and tasks for cleanup on unload.
+        """
         self.app = app
         self.plugin_name = plugin_name
         self._events: List[tuple] = []
         self._hooks: List[tuple] = []
+        self._rules: List[Callable] = []
         self._tasks: Set[asyncio.Task] = set()
         self._logger = logging.getLogger(f"Kamio.plugin.{plugin_name}")
 
@@ -62,7 +66,9 @@ class PluginContext:
         self.app.hooks.register(event_type, hook, **kwargs)
 
     # HooksManager-compatible alias
-    register = register_hook
+    def register(self, event_type: str, hook: Callable, **kwargs: Any) -> None:
+        """Alias for register_hook()."""
+        self.register_hook(event_type, hook, **kwargs)
 
     def unregister_hook(self, event_type: str, hook: Callable) -> None:
         """Unregister a lifecycle hook."""
@@ -70,8 +76,12 @@ class PluginContext:
 
     # ---- Convenience helpers ----
     def add_rule(self, func: Callable, **kwargs: Any):
-        """Register an automation rule through the app facade."""
-        return self.app.add_rule(func, **kwargs)
+        """Register an automation rule through the app facade and track it for cleanup."""
+        registered = self.app.add_rule(func, **kwargs)
+        # add_rule returns the original function; keep a reference so the rule
+        # can be removed cleanly when the plugin is unloaded.
+        self._rules.append(registered)
+        return registered
 
     def create_task(self, coro, name: Optional[str] = None) -> asyncio.Task:
         """Schedule a background task and keep a reference for cleanup."""
@@ -80,14 +90,21 @@ class PluginContext:
         task.add_done_callback(self._tasks.discard)
         return task
 
-    def cancel_tasks(self) -> None:
-        """Cancel all background tasks started by this plugin."""
-        for task in list(self._tasks):
-            if not task.done():
-                task.cancel()
+    async def cancel_tasks(self) -> None:
+        """Cancel all background tasks started by this plugin and await them.
+
+        Awaiting ensures cancelled tasks have a chance to run their
+        ``finally`` blocks and release resources before the caller proceeds.
+        """
+        pending = [t for t in self._tasks if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     @property
     def registrations(self) -> Dict[str, List[tuple]]:
+        """Return a dict of recorded event and hook registrations."""
         return {"events": list(self._events), "hooks": list(self._hooks)}
 
 
@@ -101,11 +118,15 @@ class PluginLoader:
     """
 
     def __init__(self, app: "KamioApp") -> None:
+        """Create a PluginLoader bound to the given KamioApp instance."""
         self.app = app
         self._loaded: Dict[str, Plugin] = {}
         self._load_order: List[str] = []
         # {plugin_name: PluginContext}
         self._contexts: Dict[str, PluginContext] = {}
+        # Tracks plugins currently being loaded (for cycle detection across
+        # recursive load_plugin calls).
+        self._loading: set[str] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -136,30 +157,32 @@ class PluginLoader:
 
         instance = plugin_class()
 
+        if not instance.name:
+            raise ValueError(f"Plugin class {plugin_class!r} has an empty name")
         if instance.name in self._loaded:
             raise ValueError(f"Plugin '{instance.name}' is already loaded")
 
-        for dep in instance.dependencies:
-            if dep not in self._loaded:
-                raise ValueError(f"Plugin '{instance.name}' requires '{dep}' to be loaded first")
+        # Auto-load missing dependencies (transitive) with cycle detection.
+        await self._ensure_dependencies(instance)
 
         if config:
             instance.configure(config)
 
         context = PluginContext(self.app, instance.name)
 
-        # Call on_load with context if the plugin accepts it, otherwise legacy signature.
-        sig = inspect.signature(instance.on_load)
-        if len(sig.parameters) >= 2:
+        try:
             await instance.on_load(self.app, context)
-        else:
-            await instance.on_load(self.app)
-
-        # Pass PluginContext to subscribe_events/register_hooks.  Duck typing lets
-        # legacy plugins keep calling event_bus.subscribe/hooks.register while the
-        # loader tracks registrations for clean unload.
-        instance.subscribe_events(context)
-        instance.register_hooks(context)
+            # Pass PluginContext to subscribe_events/register_hooks.
+            instance.subscribe_events(context)
+            instance.register_hooks(context)
+        except Exception:
+            # on_load() or the post-load hooks failed: the plugin is not
+            # added to the loaded registry, so unload_plugin() will never
+            # run for it.  Tear down whatever the context has already
+            # recorded (subscriptions, hooks, rules, tasks) so resources
+            # allocated before the failure do not leak.
+            await self._cleanup_context(context)
+            raise
 
         self._contexts[instance.name] = context
         self._loaded[instance.name] = instance
@@ -174,6 +197,25 @@ class PluginLoader:
             },
         )
         return instance
+
+    async def _cleanup_context(self, context: PluginContext) -> None:
+        """Tear down everything a PluginContext has registered.
+
+        Cancels background tasks, unsubscribes events/hooks, and removes
+        rules.  Used both by :meth:`unload_plugin` (after on_unload) and by
+        :meth:`load_plugin` when ``on_load`` fails so a half-loaded plugin
+        never leaks resources.
+        """
+        await context.cancel_tasks()
+        for event_type, callback in context.registrations.get("events", []):
+            self.app.event_bus.unsubscribe(event_type, callback)
+        for hook_type, hook in context.registrations.get("hooks", []):
+            self.app.hooks.unregister(hook_type, hook)
+        for rule_func in list(getattr(context, "_rules", [])):
+            try:
+                await self.app.remove_rule(rule_func)
+            except Exception as e:
+                logger.warning(f"Failed to remove plugin rule: {e}")
 
     async def unload_plugin(self, plugin_name: str) -> None:
         """
@@ -196,21 +238,19 @@ class PluginLoader:
         if dependents:
             raise ValueError(f"Cannot unload plugin '{plugin_name}': " f"required by {dependents}")
 
-        await plugin.on_unload(self.app)
+        try:
+            await plugin.on_unload(self.app)
+        finally:
+            # Clean up event subscriptions, hooks, rules, and background tasks
+            # even if on_unload raised, so resources never leak.
+            context = self._contexts.pop(plugin_name, None)
+            if context is not None:
+                await self._cleanup_context(context)
 
-        # Clean up event subscriptions, hooks, and background tasks.
-        context = self._contexts.pop(plugin_name, None)
-        if context is not None:
-            context.cancel_tasks()
-            for event_type, callback in context.registrations.get("events", []):
-                self.app.event_bus.unsubscribe(event_type, callback)
-            for hook_type, hook in context.registrations.get("hooks", []):
-                self.app.hooks.unregister(hook_type, hook)
-
-        del self._loaded[plugin_name]
-        if plugin_name in self._load_order:
-            self._load_order.remove(plugin_name)
-        logger.info(f"Unloaded plugin: {plugin_name}")
+            del self._loaded[plugin_name]
+            if plugin_name in self._load_order:
+                self._load_order.remove(plugin_name)
+            logger.info(f"Unloaded plugin: {plugin_name}")
 
         await self.app.event_bus.publish(
             "plugin_unloaded",
@@ -292,6 +332,56 @@ class PluginLoader:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _ensure_dependencies(
+        self,
+        instance: Plugin,
+    ) -> None:
+        """Recursively load missing dependencies of ``instance``.
+
+        Dependencies are looked up from plugins already registered on the app's
+        plugin loader by class. If a dependency name is not loaded and cannot
+        be resolved to a registered class, a :class:`ValueError` is raised.
+        Cycles are detected via the loader-level ``_loading`` set so that
+        recursive ``load_plugin`` calls share the same visiting state.
+        """
+        if instance.name in self._loading:
+            raise ValueError(f"Circular plugin dependency detected involving '{instance.name}'")
+        self._loading.add(instance.name)
+        try:
+            for dep in instance.dependencies:
+                if not dep:
+                    raise ValueError(f"Plugin '{instance.name}' declared an empty dependency")
+                if dep in self._loaded:
+                    continue
+                # Try to resolve the dependency from the app's registry of plugin
+                # classes (if any), otherwise we cannot satisfy it.
+                dep_class = self._resolve_dependency_class(dep)
+                if dep_class is None:
+                    raise ValueError(
+                        f"Plugin '{instance.name}' requires '{dep}' which is not loaded "
+                        f"and could not be resolved automatically"
+                    )
+                await self.load_plugin(dep_class)
+        finally:
+            self._loading.discard(instance.name)
+
+    def _resolve_dependency_class(self, name: str) -> Optional[Type[Plugin]]:
+        """Resolve a dependency name to a Plugin subclass, if registered.
+
+        By default Kamio does not keep a global plugin registry, so this returns
+        ``None`` unless the application has registered one via
+        ``app.plugin_loader.register_class(name, cls)``. Subclasses may override
+        this to provide custom resolution.
+        """
+        registry = getattr(self, "_class_registry", {})
+        return registry.get(name)
+
+    def register_class(self, name: str, plugin_class: Type[Plugin]) -> None:
+        """Register a Plugin subclass so dependencies can be auto-loaded by name."""
+        if not hasattr(self, "_class_registry"):
+            self._class_registry: Dict[str, Type[Plugin]] = {}
+        self._class_registry[name] = plugin_class
 
     @staticmethod
     def _find_plugin_class(module) -> Optional[Type[Plugin]]:

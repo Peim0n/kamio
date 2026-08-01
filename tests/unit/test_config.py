@@ -5,6 +5,7 @@ import logging
 import os
 
 import pytest
+
 from kamio.config import Config
 
 

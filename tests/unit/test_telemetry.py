@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from kamio import Device, KamioApp, telemetry
 from kamio.data_fields import parse_freq
 

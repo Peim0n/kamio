@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal
+from typing import Any, FrozenSet, Iterable, Literal, Optional
 
 _logger = logging.getLogger("Kamio.fields")
+
 
 @dataclass(frozen=True)
 class Field:
@@ -28,6 +30,7 @@ class Field:
         required:    Whether the field must be provided explicitly.
         metadata:    Arbitrary extra key-value pairs forwarded from the helper call.
     """
+
     name: str = ""
     kind: Literal["telemetry", "state", "event", "config"] = "state"
     python_type: Any = None
@@ -42,20 +45,23 @@ class Field:
     writable: bool = True
 
     # Validation
-    min: float | None = None
-    max: float | None = None
-    choices: frozenset[Any] | None = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    choices: Optional[FrozenSet[Any]] = None
     required: bool = False
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __set_name__(self, owner, name):
-        object.__setattr__(self, 'name', name)
+        """Set the field name automatically when the descriptor is assigned to a class attribute."""
+        object.__setattr__(self, "name", name)
 
     def __get__(self, obj, objtype=None):
+        """Return the field value from the instance, or the Field itself when accessed on the class."""
         if obj is None:
             return self
         return obj.__dict__.get(self.name, self.default)
+
 
 def telemetry(
     default: Any = None,
@@ -63,8 +69,8 @@ def telemetry(
     unit: str = "",
     freq: str = "",
     description: str = "",
-    min: float | None = None,
-    max: float | None = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
     required: bool = False,
     **metadata: Any,
 ) -> Any:
@@ -104,14 +110,15 @@ def telemetry(
         metadata=metadata,
     )
 
+
 def state(
     default: Any = None,
     *,
     writable: bool = True,
     description: str = "",
-    min: float | None = None,
-    max: float | None = None,
-    choices: Iterable[Any] | None = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
+    choices: Optional[Iterable[Any]] = None,
     required: bool = False,
     **metadata: Any,
 ) -> Any:
@@ -151,6 +158,7 @@ def state(
         metadata=metadata,
     )
 
+
 def event(description: str = "", **metadata: Any) -> Any:
     """
     Declare an event field on a :class:`Device`.
@@ -168,6 +176,7 @@ def event(description: str = "", **metadata: Any) -> Any:
             door_opened: None = event(description="Fires when door opens")
     """
     return Field(kind="event", description=description, metadata=metadata)
+
 
 def config(default: Any = None, **metadata: Any) -> Any:
     """
@@ -189,20 +198,26 @@ def config(default: Any = None, **metadata: Any) -> Any:
     """
     return Field(kind="config", default=default, writable=True, metadata=metadata)
 
+
 def parse_freq(freq: Any) -> float:
     """
     Parse a human-readable frequency string into seconds (float).
 
     Supported suffixes: ``ms`` (milliseconds), ``s`` (seconds),
     ``m`` (minutes), ``h`` (hours).  Plain numbers are treated as seconds.
-    Returns ``0.0`` for ``None``, empty string, or unparseable input.
+    ``None`` and empty string return ``0.0`` (treated as "telemetry disabled").
 
     Args:
         freq: Frequency value — a string like ``"5s"``, ``"500ms"``,
               ``"1m"``, an ``int``/``float`` (already in seconds), or ``None``.
 
     Returns:
-        Duration in seconds as a ``float``.
+        Duration in seconds as a non-negative ``float``. ``0.0`` disables
+        telemetry for the field.
+
+    Raises:
+        ValueError: If ``freq`` is a non-empty string that cannot be parsed,
+                    or if the resulting duration is negative.
 
     Examples::
 
@@ -216,10 +231,13 @@ def parse_freq(freq: Any) -> float:
         return 0.0
 
     if isinstance(freq, (int, float)):
-        return float(freq)
+        seconds = float(freq)
+        if seconds < 0:
+            raise ValueError(f"Frequency cannot be negative, got {freq!r}")
+        return seconds
 
     if not isinstance(freq, str):
-        return 0.0
+        raise ValueError(f"Cannot parse frequency from {type(freq).__name__}: {freq!r}")
 
     freq = freq.lower().strip()
     if not freq:
@@ -234,14 +252,21 @@ def parse_freq(freq: Any) -> float:
     for suffix, multiplier in multipliers.items():
         if freq.endswith(suffix):
             try:
-                return float(freq[: -len(suffix)]) * multiplier
+                seconds = float(freq[: -len(suffix)]) * multiplier
             except ValueError:
-                break
+                raise ValueError(
+                    f"Failed to parse frequency {freq!r}: invalid numeric value before suffix {suffix!r}"
+                )
+            if seconds < 0:
+                raise ValueError(f"Frequency cannot be negative, got {freq!r}")
+            return seconds
     try:
-        return float(freq)
+        seconds = float(freq)
     except ValueError:
-        _logger.warning(
+        raise ValueError(
             f"Failed to parse frequency {freq!r}; expected numeric value with "
-            f"unit suffix 'ms', 's', 'm', 'h'. Using 0.0"
+            f"unit suffix 'ms', 's', 'm', 'h' (e.g. '500ms', '5s', '2m', '1h')"
         )
-        return 0.0
+    if seconds < 0:
+        raise ValueError(f"Frequency cannot be negative, got {freq!r}")
+    return seconds

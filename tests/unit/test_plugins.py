@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from kamio import KamioApp
 from kamio.plugins.base import Plugin
 from kamio.plugins.loader import PluginContext

@@ -1,8 +1,8 @@
-# API Документация Kamio Core v1.0.0b1
+# API Documentation Kamio Core v1.0.0b2
 
-Эта документация описывает все публичные классы и функции фреймворка Kamio Core v1.0.0b1.
+This documentation describes all public classes and functions of the Kamio Core v1.0.0b2 framework.
 
-## Содержание
+## Table of Contents
 
 - [KamioApp](#KamioApp)
 - [HooksManager](#hooksmanager)
@@ -11,23 +11,23 @@
 - [HotReloadManager](#hotreloadmanager)
 - [CustomNode / CustomNodeManager](#customnode--customnodemanager)
 - [Device](#device)
-- [Функции для определения полей](#функции-для-определения-полей)
-- [Декоратор command](#декоратор-command)
+- [Field Definition Functions](#field-definition-functions)
+- [command Decorator](#command-decorator)
 - [Config](#config)
 - [HADiscovery](#hadiscovery)
-- [Драйверы](#драйверы-Kamiodrivers)
-- [Внутренние компоненты](#внутренние-компоненты-Kamiocore)
-- [Namespace-пакеты v1.0.0](#namespace-пакеты-v190)
+- [Drivers](#drivers-kamiodrivers)
+- [Internal Components](#internal-components-kamiocore)
+- [Namespace Packages](#namespace-packages)
 
 ## `KamioApp`
 
-Основной класс приложения, оркестрирующий устройства, правила и MQTT-коммуникацию.
-Расположен в `Kamio.app` (пакет `Kamio/app/`, класс в `_application.py`).
+The main application class, orchestrating devices, rules, and MQTT communication.
+Located in `Kamio.app` (package `Kamio/app/`, class in `_application.py`).
 
-Собирается из 8 миксинов: `LifecycleMixin`, `MqttDispatchMixin`, `DeviceRegistryMixin`,
+Assembled from 8 mixins: `LifecycleMixin`, `MqttDispatchMixin`, `DeviceRegistryMixin`,
 `RuleRegistryMixin`, `PluginFacadeMixin`, `HotReloadFacadeMixin`, `CustomNodeFacadeMixin`, `HookEventFacadeMixin`.
 
-### Инициализация
+### Initialization
 
 ```python
 class KamioApp:
@@ -43,58 +43,63 @@ class KamioApp:
         **kwargs
     ):
         """
-        Инициализация приложения Kamio.
+        Kamio application initialization.
 
-        Параметры:
-            mqtt_broker:   URI брокера ('mqtt://host:port') или готовый gmqtt.Client.
-                           Если не указан — берётся из Config.
-            client_id:     ID клиента MQTT. Авто-генерируется если не задан.
-            keepalive:     Интервал keep-alive в секундах (по умолчанию 60).
-            clean_session: Очищать сессию при подключении (по умолчанию True).
-            protocol:      Версия протокола MQTT (по умолчанию MQTTv5).
-            log_level:     Уровень логирования Python. None = из Config или без изменений.
-            config_path:   Путь к JSON-файлу конфигурации.
-            **kwargs:      Дополнительные параметры для MqttConnection
+        Parameters:
+            mqtt_broker:   Broker URI ('mqtt://host:port') or a ready-made gmqtt.Client.
+                           If not specified — taken from Config.
+            client_id:     MQTT client ID. Auto-generated if not set.
+            keepalive:     Keep-alive interval in seconds (default 60).
+            clean_session: Clear session on connect (default True).
+            protocol:      MQTT protocol version (default MQTTv5).
+            log_level:     Python logging level. None = from Config or unchanged.
+            config_path:   Path to JSON configuration file.
+            **kwargs:      Additional parameters for MqttConnection
                            (transport, tls, reconnect_min_delay, reconnect_max_delay).
+                           Unknown kwargs raise TypeError.
 
-        Примечание v1.0.0b1:
-            HADiscovery НЕ создаётся при инициализации. Вызовите enable_ha_discovery()
-            чтобы активировать интеграцию с Home Assistant.
+        Note:
+            HADiscovery is NOT created during initialization. Call enable_ha_discovery()
+            to activate Home Assistant integration.
+
+        Note:
+            Unknown kwargs raise TypeError instead of being silently ignored.
+            shutdown_timeout (float, default 5.0) — configurable timeout for graceful shutdown.
         """
-```
+    ```
 
-### Свойства
+### Properties
 
 ```python
 @property
 def logger(self) -> logging.Logger:
-    """Возвращает логгер приложения."""
+    """Returns the application logger."""
 
 @property
 def is_running(self) -> bool:
-    """Возвращает True, если приложение запущено."""
+    """Returns True if the application is running."""
 
 @property
 def devices(self) -> Dict[str, Device]:
-    """Возвращает словарь всех активных экземпляров устройств."""
+    """Returns a snapshot dict of all active device instances."""
 
 @property
 def registered_types(self) -> List[str]:
-    """Возвращает список зарегистрированных типов устройств."""
+    """Returns a list of registered device types."""
 ```
 
-### Методы
+### Methods
 
 ```python
 def device(self, cls: Optional[Type[Device]] = None) -> Callable[[Type[Device]], Type[Device]]:
     """
-    Декоратор для регистрации классов устройств.
+    Decorator for registering device classes.
     
-    Использование:
+    Usage:
         @app.device
         class MyDevice(Device): ...
         
-        ИЛИ
+        OR
         
         @app.device()
         class MyDevice(Device): ...
@@ -104,17 +109,17 @@ def rule(self, device: Optional[Type[Device]] = None, *, interval: Optional[floa
          fields: Optional[List[str]] = None, enabled: bool = True, run_on_start: bool = False,
          description: Optional[str] = None) -> Callable:
     """
-    Декоратор для регистрации правил автоматизации.
+    Decorator for registering automation rules.
     
-    Параметры:
-        device: Класс устройства для отслеживания изменений
-        interval: Интервал выполнения в секундах (для периодических правил)
-        fields: Список полей для отслеживания изменений
-        enabled: Включено ли правило
-        run_on_start: Запустить interval-правило сразу при старте движка
-        description: Описание правила
+    Parameters:
+        device: Device class to track for changes
+        interval: Execution interval in seconds (for periodic rules)
+        fields: List of fields to track for changes
+        enabled: Whether the rule is enabled
+        run_on_start: Run interval-rule immediately on engine start
+        description: Rule description
     
-    Использование:
+    Usage:
         @app.rule(device=MyDevice, fields=["temperature"])
         async def on_temp_change(snapshot, app): ...
         
@@ -126,212 +131,212 @@ def add_rule(self, func: Callable[[RuleEvent, KamioApp], Any], device: Optional[
              *, interval: Optional[float] = None, fields: Optional[List[str]] = None,
              enabled: bool = True, run_on_start: bool = False, description: Optional[str] = None) -> Callable:
     """
-    Явная регистрация правила функции.
+    Explicit registration of a rule function.
     
-    Альтернатива декоратору @app.rule для динамической регистрации правил.
+    Alternative to the @app.rule decorator for dynamic rule registration.
     
-    Параметры:
-        func: Функция правила для регистрации
-        device: Класс устройства для отслеживания изменений
-        interval: Интервал выполнения в секундах (для периодических правил)
-        fields: Список полей для отслеживания изменений
-        enabled: Включено ли правило
-        run_on_start: Запустить interval-правило сразу при старте движка
-        description: Описание правила
+    Parameters:
+        func: Rule function to register
+        device: Device class to track for changes
+        interval: Execution interval in seconds (for periodic rules)
+        fields: List of fields to track for changes
+        enabled: Whether the rule is enabled
+        run_on_start: Run interval-rule immediately on engine start
+        description: Rule description
 
-    Возвращает:
-        Зарегистрированную функцию
+    Returns:
+        The registered function
     
-    Пример:
+    Example:
         async def on_motion(snapshot, app): ...
         app.add_rule(on_motion, device=MotionSensor, fields=["motion"])
     """
 
 def register(self, device_class: Type[Device]):
     """
-    Регистрирует класс устройства без использования декоратора.
+    Registers a device class without using a decorator.
     
-    Параметры:
-        device_class: Класс устройства для регистрации
+    Parameters:
+        device_class: Device class to register
     """
 
 async def create_device(self, device_id: str, device_type: str, **kwargs) -> Device:
     """
-    Создает и запускает экземпляр устройства.
+    Creates and starts a device instance.
     
-    Параметры:
-        device_id: Уникальный идентификатор устройства
-        device_type: Тип устройства (имя зарегистрированного класса)
-        **kwargs: Дополнительные параметры для конструктора устройства
+    Parameters:
+        device_id: Unique device identifier
+        device_type: Device type (name of the registered class)
+        **kwargs: Additional parameters for the device constructor
     
-    Возвращает:
-        Экземпляр созданного устройства
+    Returns:
+        The created device instance
     
-    Пример:
+    Example:
         device = await app.create_device("my_sensor", "thermostat", driver=my_driver)
     """
 
 async def add_device(self, device_id: str, device_class: Type[Device], **kwargs) -> Device:
     """
-    Упрощенный метод создания устройства с автоматической регистрацией класса.
+    Simplified device creation method with automatic class registration.
     
-    **Новое в v1.3.0**: Рекомендуемый способ создания устройств.
-    Автоматически регистрирует класс устройства, если он еще не зарегистрирован.
+    Recommended way to create devices.
+    Automatically registers the device class if it is not yet registered.
     
-    Параметры:
-        device_id: Уникальный идентификатор устройства
-        device_class: Класс устройства (автоматически регистрируется при необходимости)
-        **kwargs: Дополнительные параметры для конструктора устройства
+    Parameters:
+        device_id: Unique device identifier
+        device_class: Device class (automatically registered if needed)
+        **kwargs: Additional parameters for the device constructor
     
-    Возвращает:
-        Экземпляр созданного устройства
+    Returns:
+        The created device instance
     
-    Пример:
+    Example:
         device = await app.add_device("my_sensor", Thermostat, driver=my_driver)
     """
 
 def run(self):
     """
-    Блокирующий метод запуска приложения.
-    Рекомендуемый способ запуска в продакшене.
-    Обрабатывает сигналы SIGINT и SIGTERM для корректного завершения.
+    Blocking method to start the application.
+    Recommended way to run in production.
+    Handles SIGINT and SIGTERM signals for graceful shutdown.
     """
 
 async def start(self):
     """
-    Асинхронный запуск приложения.
-    Подключается к MQTT брокеру и запускает все узлы устройств.
+    Asynchronous application start.
+    Connects to the MQTT broker and starts all device nodes.
     """
 
 async def stop(self):
     """
-    Асинхронная остановка приложения.
-    Корректно останавливает все устройства и отключается от MQTT.
+    Asynchronous application stop.
+    Gracefully stops all devices and disconnects from MQTT.
     """
 
 async def remove_device(self, device_id: str) -> None:
     """
-    Останавливает и удаляет устройство из реестра.
+    Stops and removes a device from the registry.
 
-    Вызывает хук 'on_device_removed' перед удалением.
-    Безопасно при отсутствии устройства (логирует предупреждение).
+    Calls the 'on_device_removed' hook before removal.
+    Safe if device is not found (logs a warning).
 
-    Параметры:
-        device_id: Идентификатор устройства для удаления
+    Parameters:
+        device_id: Device identifier to remove
     """
 
 async def remove_rule(self, func: Callable) -> None:
     """
-    Удаляет зарегистрированное правило по функции.
+    Removes a registered rule by function.
 
-    Отменяет фоновую задачу interval-правила (если есть).
-    Вызывает хук 'on_rule_removed' перед удалением.
-    Безопасно при отсутствии правила (логирует предупреждение).
+    Cancels the interval-rule background task (if any).
+    Calls the 'on_rule_removed' hook before removal.
+    Safe if rule is not found (logs a warning).
 
-    Параметры:
-        func: Функция правила, переданная в @app.rule или app.add_rule
+    Parameters:
+        func: Rule function passed to @app.rule or app.add_rule
     """
 
 def register_hook(self, event_type: str, hook: Callable, priority: int = 0) -> None:
     """
-    Регистрирует lifecycle-хук.
+    Registers a lifecycle hook.
 
-    Удобный псевдоним для app.hooks.register().
+    Convenient alias for app.hooks.register().
 
-    Параметры:
-        event_type: Имя события ('on_before_start', 'on_device_added' и др.)
-        hook: Sync или async callable
-        priority: Приоритет выполнения (выше = раньше, по умолчанию 0)
+    Parameters:
+        event_type: Event name ('on_before_start', 'on_device_added', etc.)
+        hook: Sync or async callable
+        priority: Execution priority (higher = earlier, default 0)
     """
 
 def unregister_hook(self, event_type: str, hook: Callable) -> None:
     """
-    Удаляет ранее зарегистрированный хук.
+    Removes a previously registered hook.
 
-    Параметры:
-        event_type: Имя события
-        hook: Функция хука для удаления
+    Parameters:
+        event_type: Event name
+        hook: Hook function to remove
     """
 ```
 
 ## `HooksManager`
 
-**Новое в v1.4.0.** Управляет lifecycle-хуками приложения, устройств и правил.
-Доступен через `app.hooks`.
+Manages application, device, and rule lifecycle hooks.
+Accessible via `app.hooks`.
 
-### Инициализация
+### Initialization
 
 ```python
 class HooksManager:
     def __init__(self): ...
 ```
 
-### Методы
+### Methods
 
 ```python
 def register(self, event_type: str, hook: Callable, priority: int = 0) -> None:
     """
-    Регистрирует хук для события.
+    Registers a hook for an event.
 
-    Параметры:
-        event_type: Имя события
-        hook: Sync или async callable. Вызывается с аргументами, переданными в trigger()
-        priority: Хуки с большим значением выполняются первыми (по умолчанию 0)
+    Parameters:
+        event_type: Event name
+        hook: Sync or async callable. Called with arguments passed to trigger()
+        priority: Hooks with higher values execute first (default 0)
     """
 
 def unregister(self, event_type: str, hook: Callable) -> None:
-    """Удаляет хук для события."""
+    """Removes a hook for an event."""
 
 def list_hooks(self, event_type: str) -> List[Callable]:
-    """Возвращает список зарегистрированных хуков в порядке приоритета."""
+    """Returns a list of registered hooks in priority order."""
 
 def clear(self, event_type: str = None) -> None:
     """
-    Очищает хуки.
-    Если event_type не указан — очищает все события.
+    Clears hooks.
+    If event_type is not specified — clears all events.
     """
 
 async def trigger(self, event_type: str, *args, **kwargs) -> None:
     """
-    Вызывает все хуки события в порядке приоритета.
+    Calls all hooks for an event in priority order.
 
-    Поддерживает sync и async хуки.
-    Ошибки в хуках логируются и не прерывают выполнение остальных.
+    Supports sync and async hooks.
+    Errors in hooks are logged and do not interrupt execution of the rest.
     """
 ```
 
-### События приложения
+### Application Events
 
-| Событие | Когда вызывается | Аргументы |
+| Event | When called | Arguments |
 |---|---|---|
-| `on_before_start` | До подключения к MQTT | — |
-| `on_after_start` | После успешного запуска | — |
-| `on_before_stop` | До начала остановки | — |
-| `on_after_stop` | После полной остановки | — |
+| `on_before_start` | Before connecting to MQTT | — |
+| `on_after_start` | After successful start | — |
+| `on_before_stop` | Before stopping begins | — |
+| `on_after_stop` | After full stop | — |
 
-### События устройств
+### Device Events
 
-| Событие | Когда вызывается | Аргументы |
+| Event | When called | Arguments |
 |---|---|---|
-| `on_device_added` | После создания устройства | `device: Device` |
-| `on_device_removed` | До удаления устройства | `device: Device` |
-| `on_device_started` | После запуска `DeviceNode` | `device: Device` |
-| `on_device_stopped` | После остановки `DeviceNode` | `device: Device` |
+| `on_device_added` | After device creation | `device: Device` |
+| `on_device_removed` | Before device removal | `device: Device` |
+| `on_device_started` | After `DeviceNode` starts | `device: Device` |
+| `on_device_stopped` | After `DeviceNode` stops | `device: Device` |
 
-### События правил
+### Rule Events
 
-| Событие | Когда вызывается | Аргументы |
+| Event | When called | Arguments |
 |---|---|---|
-| `on_rule_added` | При регистрации правила через `@app.rule` | `rule: Rule` |
-| `on_rule_removed` | До удаления правила через `remove_rule` | `rule: Rule` |
-| `on_rule_triggered` | После успешного выполнения правила | `rule: Rule, snapshot: dict` |
-| `on_rule_failed` | После ошибки в правиле | `rule: Rule, error: Exception` |
+| `on_rule_added` | When a rule is registered via `@app.rule` | `rule: Rule` |
+| `on_rule_removed` | Before a rule is removed via `remove_rule` | `rule: Rule` |
+| `on_rule_triggered` | After successful rule execution | `rule: Rule, snapshot: dict` |
+| `on_rule_failed` | After a rule error | `rule: Rule, error: Exception` |
 
-### Пример
+### Example
 
 ```python
 async def on_new_device(device):
-    print(f"Новое устройство: {device.device_type()}")
+    print(f"New device: {device.device_type()}")
 
 app.register_hook('on_device_added', on_new_device)
 app.register_hook('on_rule_failed', lambda rule, err: logger.error(f"{getattr(rule, 'func', rule).__name__}: {err}"))
@@ -339,11 +344,11 @@ app.register_hook('on_rule_failed', lambda rule, err: logger.error(f"{getattr(ru
 
 ## `EventBus`
 
-**Новое в v1.5.0.** Публичная шина событий для пользовательской логики pub/sub. Доступен через `app.event_bus`.
+Public event bus for custom pub/sub logic. Accessible via `app.event_bus`.
 
-> **Отличие от `HooksManager`:** `HooksManager` — внутренние перехватчики жизненного цикла. `EventBus` — публичный API для подписки на системные и пользовательские события.
+> **Difference from `HooksManager`:** `HooksManager` — internal lifecycle interceptors. `EventBus` — public API for subscribing to system and custom events.
 
-### Методы
+### Methods
 
 ```python
 def subscribe(
@@ -354,85 +359,85 @@ def subscribe(
     priority: int = 0,
 ) -> None:
     """
-    Подписка на событие.
+    Subscribe to an event.
 
-    Параметры:
-        event_type: Имя события
-        callback: Sync или async callable, получает словарь data
-        filter_fn: Опциональный предикат (data) -> bool. callback пропускается при False
-        priority: Выше = раньше (по умолчанию 0)
+    Parameters:
+        event_type: Event name
+        callback: Sync or async callable, receives a data dict
+        filter_fn: Optional predicate (data) -> bool. callback is skipped when False
+        priority: Higher = earlier (default 0)
     """
 
 def unsubscribe(self, event_type: str, callback: Callable) -> None:
-    """Удалить подписку по идентичности callback."""
+    """Remove subscription by callback identity."""
 
 def list_subscribers(self, event_type: str) -> List[Callable]:
-    """Список callback в порядке приоритета."""
+    """List of callbacks in priority order."""
 
 def event_types(self) -> List[str]:
-    """Список типов событий, имеющих подписчиков."""
+    """List of event types that have subscribers."""
 
 def clear(self, event_type: str = None) -> None:
-    """Очистить подписчиков. Без аргумента — все события."""
+    """Clear subscribers. Without argument — all events."""
 
 async def publish(self, event_type: str, data: dict) -> None:
     """
-    Опубликовать событие.
+    Publish an event.
 
-    Автоматически добавляет 'timestamp' в data (если в ней нет).
-    Читает filter_fn перед вызовом callback.
-    Ошибки логируются, остальные callback продолжают работу.
+    Automatically adds 'timestamp' to data (if not present).
+    Checks filter_fn before calling callback.
+    Errors are logged, remaining callbacks continue execution.
     """
 ```
 
-### События приложения
+### Application Events
 
-| Событие | Когда | Поля data |
+| Event | When | data fields |
 |---|---|---|
-| `app_start` | После запуска | `timestamp` |
-| `app_stop` | После остановки | `timestamp` |
-| `mqtt_connected` | Подключение MQTT | `broker, port, rc, timestamp` |
-| `mqtt_disconnected` | Отключение MQTT | `rc, timestamp` |
-| `mqtt_message_received` | Входящее сообщение | `topic, payload, qos, timestamp` |
-| `device_added` | Создание устройства | `device_id, device_type, device, timestamp` |
-| `device_removed` | Удаление устройства | `device_id, device_type, timestamp` |
-| `device_state_changed` | Изменение state | `device_id, field, old_value, new_value, timestamp` |
-| `device_command_executed` | Выполнение команды | `device_id, command, params, result, timestamp` |
-| `rule_added` | Регистрация правила | `rule, timestamp` |
-| `rule_removed` | Удаление правила | `rule, timestamp` |
-| `rule_triggered` | Успешное выполнение | `rule, snapshot, timestamp` |
-| `rule_failed` | Ошибка в правиле | `rule, error, timestamp` |
+| `app_start` | After start | `timestamp` |
+| `app_stop` | After stop | `timestamp` |
+| `mqtt_connected` | MQTT connection | `broker, port, rc, timestamp` |
+| `mqtt_disconnected` | MQTT disconnection | `rc, timestamp` |
+| `mqtt_message_received` | Incoming message | `topic, payload, qos, timestamp` |
+| `device_added` | Device creation | `device_id, device_type, device, timestamp` |
+| `device_removed` | Device removal | `device_id, device_type, timestamp` |
+| `device_state_changed` | State change | `device_id, field, old_value, new_value, timestamp` |
+| `device_command_executed` | Command execution | `device_id, command, params, result, timestamp` |
+| `rule_added` | Rule registration | `rule, timestamp` |
+| `rule_removed` | Rule removal | `rule, timestamp` |
+| `rule_triggered` | Successful execution | `rule, snapshot, timestamp` |
+| `rule_failed` | Rule error | `rule, error, timestamp` |
 
-### Методы `KamioApp`
+### `KamioApp` Methods
 
 ```python
 def subscribe_event(self, event_type: str, callback: Callable, filter_fn=None, priority: int = 0) -> None:
-    """Псевдоним app.event_bus.subscribe()."""
+    """Alias for app.event_bus.subscribe()."""
 
 def unsubscribe_event(self, event_type: str, callback: Callable) -> None:
-    """Псевдоним app.event_bus.unsubscribe()."""
+    """Alias for app.event_bus.unsubscribe()."""
 
 async def publish_event(self, event_type: str, data: dict) -> None:
-    """Публикация пользовательского события."""
+    """Publish a custom event."""
 ```
 
-### Пример
+### Example
 
 ```python
-# Подписка с фильтром
+# Subscribe with filter
 app.subscribe_event(
     "device_state_changed",
     lambda d: print(f"{d['device_id']}.{d['field']} = {d['new_value']}"),
     filter_fn=lambda d: d.get("field") == "temperature",
 )
 
-# Пользовательское событие
+# Custom event
 await app.publish_event("sensor_alert", {"level": "critical", "sensor": "co2"})
 ```
 
 ## `Plugin` / `PluginLoader`
 
-**Новое в v1.6.0.** Плагин-система для расширения фреймворка без изменения ядра.
+Plugin system for extending the framework without modifying the core.
 
 ### `Plugin` (ABC)
 
@@ -443,17 +448,17 @@ from kamio.plugins.loader import PluginContext
 class Plugin(ABC):
     @property
     @abstractmethod
-    def name(self) -> str: ...         # Уникальное имя плагина
+    def name(self) -> str: ...         # Unique plugin name
 
     @property
     @abstractmethod
-    def version(self) -> str: ...      # Строка версии
+    def version(self) -> str: ...      # Version string
 
     @property
-    def description(self) -> str: ...  # Опциональное описание
+    def description(self) -> str: ...  # Optional description
 
     @property
-    def dependencies(self) -> List[str]: ...  # Имена плагинов-предшественников
+    def dependencies(self) -> List[str]: ...  # Names of prerequisite plugins
 
     def configure(self, config: Dict[str, Any]) -> None: ...
     async def on_load(self, app: KamioApp, context: Optional[PluginContext] = None) -> None: ...
@@ -462,48 +467,69 @@ class Plugin(ABC):
     def register_hooks(self, hooks: Any) -> None: ...
 ```
 
-`PluginContext` (из `Kamio.plugins.loader`) используется для scoped-регистрации подписок и хуков.
+`PluginContext` (from `Kamio.plugins.loader`) is used for scoped registration of subscriptions and hooks.
 
 ### `PluginLoader`
 
 ```python
 async def load_plugin(self, plugin_class: Type[Plugin], config: dict = None) -> Plugin:
     """
-    Загрузить плагин по классу.
-    Вызывает configure() → on_load() → subscribe_events() → register_hooks().
-    Выбрасывает ValueError если плагин уже загружен или зависимость не загружена.
+    Load a plugin by class.
+    Calls configure() → on_load() → subscribe_events() → register_hooks().
+    Automatically loads missing dependencies (transitively).
+    Raises TypeError if the class does not inherit Plugin.
+    Raises ValueError if the plugin is already loaded, a dependency is not found,
+    or a circular dependency is detected.
     """
 
 async def unload_plugin(self, plugin_name: str) -> None:
-    """Вызывает on_unload() и удаляет из реестра."""
+    """
+    Calls on_unload() and removes from the registry.
+    Raises ValueError if another loaded plugin depends on this one.
+    Logs a warning and returns if the plugin is not found.
+    Cleanup of subscriptions/hooks/rules is performed in try-finally,
+    so resources do not leak even on error in on_unload().
+    """
 
 async def load_from_module(self, module_name: str, config: dict = None) -> Plugin:
-    """Загрузить плагин из Python-модуля по его доттед пути."""
+    """Load a plugin from a Python module by its dotted path."""
 
 async def load_plugins_from_directory(self, directory: str) -> List[Plugin]:
-    """Загрузить все плагины из директории (*.py, не ___). Ошибки логируются."""
+    """Load all plugins from a directory (*.py, not __*). Errors are logged and skipped."""
+
+def register_class(self, name: str, plugin_class: Type[Plugin]) -> None:
+    """
+    Registers a plugin class by name so dependencies can
+    be auto-loaded by name. Used by _ensure_dependencies.
+    """
 
 def get_plugin(self, plugin_name: str) -> Optional[Plugin]: ...
 def list_plugins(self) -> List[str]: ...
 
 async def unload_all(self) -> None:
-    """Выгружает все плагины в обратном порядке загрузки."""
+    """Unloads all plugins in reverse load order."""
 
 @property
 def load_order(self) -> List[str]:
-    """Список имён плагинов в порядке их загрузки."""
+    """List of plugin names in their load order."""
 ```
 
-### События plugin_loaded / plugin_unloaded
+#### Circular Dependency Detection
 
-Публикуются в `EventBus` автоматически:
+`PluginLoader` uses an instance-level `_loading` set to detect cycles
+between recursive `load_plugin` calls. If plugin A depends on B, and B on A,
+it raises `ValueError("Circular plugin dependency detected involving 'A'")`.
 
-| Событие | Поля |
+### plugin_loaded / plugin_unloaded Events
+
+Published to `EventBus` automatically:
+
+| Event | Fields |
 |---|---|
 | `plugin_loaded` | `plugin_name, plugin_version, timestamp` |
 | `plugin_unloaded` | `plugin_name, timestamp` |
 
-### Методы `KamioApp`
+### `KamioApp` Methods
 
 ```python
 await app.load_plugin(PluginClass, config={...})
@@ -514,14 +540,14 @@ app.get_plugin("plugin_name")   # -> Plugin | None
 app.list_plugins()              # -> List[str]
 ```
 
-### Встроенные плагины
+### Built-in Plugins
 
-| Класс | Модуль | Описание |
+| Class | Module | Description |
 |---|---|---|
-| `LoggingPlugin` | `Kamio.plugins.builtin.logging_plugin` | События → rotating log-файл |
-| `MetricsPlugin` | `Kamio.plugins.builtin.metrics_plugin` | In-memory счётчики событий |
+| `LoggingPlugin` | `Kamio.plugins.builtin.logging_plugin` | Events → rotating log file |
+| `MetricsPlugin` | `Kamio.plugins.builtin.metrics_plugin` | In-memory event counters |
 
-### Пример
+### Example
 
 ```python
 from kamio.plugins.builtin import MetricsPlugin, LoggingPlugin
@@ -535,42 +561,42 @@ print(metrics.get_metrics())
 
 ## `HotReloadManager`
 
-**Новое в v1.7.0.** Горячая перезагрузка правил, девайсов и конфигурации без остановки приложения.
-Доступен через `app.hot_reload`.
+Hot reloading of rules, devices, and configuration without stopping the application.
+Accessible via `app.hot_reload`.
 
-### Методы
+### Methods
 
 ```python
 def watch_file(self, path: str, handler: Callable) -> None:
-    """Отслеживать файл. handler(file_path) вызывается при изменении."""
+    """Watch a file. handler(file_path) is called on change."""
 
 def watch_directory(self, directory: str, pattern: str, handler: Callable) -> None:
-    """Отслеживать директорию по шаблону (e.g. '*.py')."""
+    """Watch a directory by pattern (e.g. '*.py')."""
 
 def enable(self) -> None:
-    """Запустить asyncio polling loop (внутренний метод)."""
+    """Start asyncio polling loop (internal method)."""
 
 def disable(self) -> None:
-    """Остановить polling loop (внутренний метод)."""
+    """Stop polling loop (internal method)."""
 
 def list_watched(self) -> List[str]:
-    """Список отслеживаемых путей."""
+    """List of watched paths."""
 
 @property
 def is_enabled(self) -> bool:
-    """Возвращает True, если HotReloadManager активен."""
+    """Returns True if HotReloadManager is active."""
 
-# Готовые handler-фабрики:
+# Ready-made handler factories:
 def make_rules_handler(self) -> Callable: ...
 def make_devices_handler(self) -> Callable: ...
 def make_config_handler(self) -> Callable: ...
 ```
 
-**Примечание:** Для включения/отключения hot reload используйте методы фасада `KamioApp`:
-- `app.enable_hot_reload()` - включить polling
-- `app.disable_hot_reload()` - остановить polling
+**Note:** To enable/disable hot reload, use the `KamioApp` facade methods:
+- `app.enable_hot_reload()` - start polling
+- `app.disable_hot_reload()` - stop polling
 
-### Самостоятельные функции
+### Standalone Functions
 
 ```python
 from kamio.core.hot_reload import (
@@ -580,38 +606,38 @@ from kamio.core.hot_reload import (
 )
 ```
 
-### События EventBus
+### EventBus Events
 
-| Событие | Поля |
+| Event | Fields |
 |---|---|
 | `hot_reload_rules` | `file_path, replaced, timestamp` |
 | `hot_reload_devices` | `file_path, updated_classes, timestamp` |
 | `hot_reload_config` | `file_path, config, timestamp` |
 | `hot_reload_error` | `file_path, error, timestamp` |
 
-### Методы `KamioApp`
+### `KamioApp` Methods
 
 ```python
-app.enable_hot_reload()                            # включить polling
-app.disable_hot_reload()                           # остановить polling
-app.watch_file(path, handler)                      # отслеживать файл
-app.watch_directory(directory, pattern, handler)   # отслеживать директорию
+app.enable_hot_reload()                            # enable polling
+app.disable_hot_reload()                           # stop polling
+app.watch_file(path, handler)                      # watch a file
+app.watch_directory(directory, pattern, handler)   # watch a directory
 ```
 
-### Пример
+### Example
 
 ```python
-# Горячая перезагрузка правил из директории
+# Hot reload rules from a directory
 app.watch_directory("rules/", "*.py", app.hot_reload.make_rules_handler())
 app.enable_hot_reload()
 
-# Горячая перезагрузка конфиг
+# Hot reload config
 app.watch_file("config.json", app.hot_reload.make_config_handler())
 ```
 
 ## `CustomNode` / `CustomNodeManager`
 
-**Новое в v1.8.0.** Расширяемая система MQTT-узлов для специфичных протоколов и кастомной логики.
+Extensible MQTT node system for specific protocols and custom logic.
 
 ### `CustomNode` (ABC)
 
@@ -628,75 +654,75 @@ class CustomNode(ABC):
     @abstractmethod
     async def handle_message(self, topic: str, payload: bytes) -> None: ...
 
-    async def on_connect(self) -> None: ...    # опционально
-    async def on_disconnect(self) -> None: ... # опционально
+    async def on_connect(self) -> None: ...    # optional
+    async def on_disconnect(self) -> None: ... # optional
 
     def subscribe(self, topic: str, qos: int = 0) -> None:
-        """Подписка на topic относительно topic_prefix."""
+        """Subscribe to a topic relative to topic_prefix."""
 
     def subscribe_absolute(self, topic: str, qos: int = 0) -> None:
-        """Подписка на абсолютный топик."""
+        """Subscribe to an absolute topic."""
 
     def publish(self, topic: str, payload, qos: int = 0, retain: bool = False) -> None:
-        """Публикация относительно topic_prefix."""
+        """Publish relative to topic_prefix."""
 
     def publish_absolute(self, topic: str, payload, qos: int = 0, retain: bool = False) -> None:
-        """Публикация на абсолютный топик."""
+        """Publish to an absolute topic."""
 
     async def publish_async(self, topic: str, payload, qos: int = 0, retain: bool = False) -> None:
-        """Асинхронная (non-blocking) публикация относительно topic_prefix."""
+        """Asynchronous (non-blocking) publish relative to topic_prefix."""
 
     def matches(self, topic: str) -> bool:
-        """Возвращает True если topic начинается с topic_prefix."""
+        """Returns True if topic starts with topic_prefix."""
 ```
 
 ### `CustomNodeManager`
 
 ```python
 def register_node(self, name: str, node: CustomNode) -> None:
-    """Регистрация. ValueError если имя уже занято."""
+    """Registration. ValueError if name is already taken."""
 
 def unregister_node(self, name: str) -> None:
-    """Безопасное удаление."""
+    """Safe removal."""
 
 async def start_all(self) -> None:
-    """Запуск всех узлов. Ошибка одного узла не останавливает другие."""
+    """Start all nodes. An error in one node does not stop others."""
 
 async def stop_all(self) -> None:
-    """Остановка в обратном порядке."""
+    """Stop in reverse order."""
 
 async def route_message(self, topic: str, payload: bytes) -> bool:
-    """Маршрутизация сообщения. True если хотя бы один узел обработал."""
+    """Route a message. True if at least one node handled it."""
 
 def get_node(self, name: str) -> Optional[CustomNode]: ...
 def list_nodes(self) -> List[str]: ...
 ```
 
-### События EventBus
+### EventBus Events
 
-| Событие | Поля |
+| Event | Fields |
 |---|---|
 | `custom_node_started` | `node_name, topic_prefix, timestamp` |
 | `custom_node_stopped` | `node_name, timestamp` |
 | `custom_node_error` | `node_name, error, phase, timestamp` |
 
-### Методы `KamioApp`
+### `KamioApp` Methods
 
 ```python
-app.register_custom_node(name, node)  # регистрация
-app.unregister_custom_node(name)      # удаление
+app.register_custom_node(name, node)  # register
+app.unregister_custom_node(name)      # remove
 app.get_custom_node(name)             # -> CustomNode | None
 app.list_custom_nodes()               # -> List[str]
 ```
 
-### Пример
+### Example
 
 ```python
 from kamio.core.custom_nodes import CustomNode
 
 class MySensorBridge(CustomNode):
     async def start(self):
-        self.subscribe("#")  # подписка на <prefix>/#
+        self.subscribe("#")  # subscribe to <prefix>/#
 
     async def stop(self):
         pass
@@ -710,272 +736,272 @@ app.register_custom_node("sensors", MySensorBridge(app.mqtt_client, "sensors"))
 
 ## `Device`
 
-Базовый класс для всех устройств Kamio. Поддерживает декларативное описание полей (телеметрия, состояние) и команд.
+Base class for all Kamio devices. Supports declarative field definitions (telemetry, state) and commands.
 
-### Классовые переменные
+### Class Variables
 
 ```python
 Kamio_FIELDS: ClassVar[Dict[str, Field]]
-    """Словарь всех полей устройства (telemetry, state, config)."""
+    """Dictionary of all device fields (telemetry, state, config)."""
 
 Kamio_COMMANDS: ClassVar[Dict[str, Any]]
-    """Словарь всех команд устройства (методов с декоратором @command)."""
+    """Dictionary of all device commands (methods with the @command decorator)."""
 
 Kamio_EVENTS: ClassVar[Dict[str, Field]]
-    """Словарь всех событий устройства."""
+    """Dictionary of all device events."""
 
 Kamio_RULES: ClassVar[Dict[str, Any]]
-    """Словарь автоматических правил устройства, созданных декоратором @rule."""
+    """Dictionary of automatic device rules created by the @rule decorator."""
 ```
 
-### Инициализация
+### Initialization
 
 ```python
 def __init__(self, driver: Optional[BaseDriver] = None, keepalive_interval: float = 30.0, **kwargs):
     """
-    Инициализация устройства.
+    Device initialization.
     
-    Параметры:
-        driver: Экземпляр драйвера для взаимодействия с оборудованием
-        keepalive_interval: Интервал отправки keepalive-сообщений в секундах (0 — отключить)
-        **kwargs: Дополнительные параметры
+    Parameters:
+        driver: Driver instance for hardware interaction
+        keepalive_interval: Interval for sending keepalive messages in seconds (0 — disable)
+        **kwargs: Additional parameters
     """
 ```
 
-### Свойства
+### Properties
 
 ```python
 @property
 def app(self) -> KamioApp:
-    """Возвращает экземпляр KamioApp, к которому привязано устройство."""
+    """Returns the KamioApp instance the device is attached to."""
 ```
 
-### Атрибуты
+### Attributes
 
 ```python
 node: Optional[DeviceNode]
-    """Узел устройства для MQTT коммуникации. Устанавливается KamioApp при регистрации."""
+    """Device node for MQTT communication. Set by KamioApp on registration."""
 
 driver: Optional[BaseDriver]
-    """Драйвер устройства для взаимодействия с оборудованием."""
+    """Device driver for hardware interaction."""
 ```
 
-### Классовые методы
+### Class Methods
 
 ```python
 @classmethod
 def device_type(cls) -> str:
     """
-    Возвращает строковое представление типа устройства (имя класса в нижнем регистре).
+    Returns the string representation of the device type (class name in lowercase).
     
-    Пример:
+    Example:
         MyDevice.device_type() -> "mydevice"
     """
 
 @classmethod
 def get_schema(cls) -> Dict[str, Any]:
     """
-    Возвращает схему устройства с описанием всех полей, команд и событий.
+    Returns the device schema with descriptions of all fields, commands, and events.
     
-    Возвращает:
-        Словарь с метаданными устройства
+    Returns:
+        Dictionary with device metadata
     """
 
 @classmethod
 def get_fields(cls, kind: str | None = None, writable: bool | None = None) -> Dict[str, Field]:
     """
-    Возвращает поля устройства с фильтрацией.
+    Returns device fields with filtering.
     
-    Параметры:
-        kind: Тип поля ("telemetry", "state", "config")
-        writable: Фильтр по возможности записи
+    Parameters:
+        kind: Field type ("telemetry", "state", "config")
+        writable: Filter by writability
     
-    Возвращает:
-        Словарь полей
+    Returns:
+        Dictionary of fields
     """
 
 @classmethod
 def get_telemetry(cls) -> Dict[str, Field]:
-    """Возвращает все поля телеметрии."""
+    """Returns all telemetry fields."""
 
 @classmethod
 def get_states(cls, writable: bool | None = None) -> Dict[str, Field]:
-    """Возвращает все поля состояния."""
+    """Returns all state fields."""
 
 @classmethod
 def get_commands(cls) -> Dict[str, Any]:
-    """Возвращает все команды устройства."""
+    """Returns all device commands."""
 ```
 
-### Методы жизненного цикла
+### Lifecycle Methods
 
 ```python
 async def on_init(self, **kwargs):
     """
-    Асинхронный хук инициализации, вызывается при создании устройства.
-    Подходит для подключения драйвера и начальной настройки.
+    Asynchronous initialization hook, called on device creation.
+    Suitable for connecting the driver and initial setup.
     """
 
 async def on_start(self, node: DeviceNode):
     """
-    Хук, вызываемый при запуске узла устройства.
-    Подходит для запуска фоновых задач и начала публикации телеметрии.
+    Hook called when the device node starts.
+    Suitable for starting background tasks and beginning telemetry publishing.
     """
 
 async def on_stop(self, node: DeviceNode):
     """
-    Хук, вызываемый при остановке узла устройства.
-    Подходит для корректного завершения задач и отключения драйвера.
+    Hook called when the device node stops.
+    Suitable for graceful task termination and driver disconnection.
     """
 
 async def shutdown(self):
     """
-    Полное завершение работы устройства.
-    Отключает драйвер и отменяет все фоновые задачи.
+    Full device shutdown.
+    Disconnects the driver and cancels all background tasks.
     """
 
 async def reinitialize(self):
     """
-    Реинициализация устройства (остановка и повторный запуск).
+    Device reinitialization (stop and restart).
     """
 ```
 
-### Методы работы с состоянием
+### State Methods
 
 ```python
 def get_state_snapshot(self) -> Dict[str, Any]:
-    """Возвращает снимок всех полей состояния."""
+    """Returns a snapshot of all state fields."""
 
 def get_config_snapshot(self) -> Dict[str, Any]:
-    """Возвращает снимок всех полей конфигурации."""
+    """Returns a snapshot of all config fields."""
 
 def get_telemetry_snapshot(self) -> Dict[str, Any]:
-    """Возвращает снимок всех полей телеметрии."""
+    """Returns a snapshot of all telemetry fields."""
 
 def get_full_snapshot(self) -> Dict[str, Any]:
-    """Возвращает полный снимок всех полей устройства."""
+    """Returns a full snapshot of all device fields."""
 
 async def request_state_sync(self):
     """
-    Запрашивает синхронизацию текущего состояния устройства с брокером.
-    Публикует сообщение типа DEVICE_STATE с текущими значениями полей state.
+    Requests synchronization of the current device state with the broker.
+    Publishes a DEVICE_STATE message with current state field values.
     """
 
 async def request_full_sync(self):
     """
-    Запрашивает полную синхронизацию всех полей устройства.
+    Requests full synchronization of all device fields.
     """
 ```
 
-### Методы работы с событиями
+### Event Methods
 
 ```python
 async def emit(self, event_name: str, payload: dict):
     """
-    Публикует событие от устройства.
+    Publishes an event from the device.
     
-    Параметры:
-        event_name: Имя события
-        payload: Данные события
+    Parameters:
+        event_name: Event name
+        payload: Event data
     """
 
 async def handle_event(self, event_name: str, payload: dict):
     """
-    Обработчик входящих событий. Переопределяется в подклассах.
+    Handler for incoming events. Overridden in subclasses.
     """
 ```
 
-### Методы обработки команд и состояния
+### Command and State Handling Methods
 
 ```python
 async def handle_state(self, data: dict) -> Dict[str, Any]:
     """
-    Обрабатывает входящие изменения состояния.
-    Валидирует и применяет изменения к полям state.
+    Handles incoming state changes.
+    Validates and applies changes to state fields.
     
-    Параметры:
-        data: Словарь с изменениями состояния
+    Parameters:
+        data: Dictionary with state changes
     
-    Возвращает:
-        Словарь примененных изменений
+    Returns:
+        Dictionary of applied changes
     """
 
 async def handle_config(self, data: dict) -> Dict[str, Any]:
     """
-    Обрабатывает входящие изменения конфигурации.
+    Handles incoming configuration changes.
     
-    Параметры:
-        data: Словарь с изменениями конфигурации
+    Parameters:
+        data: Dictionary with configuration changes
     
-    Возвращает:
-        Словарь примененных изменений
+    Returns:
+        Dictionary of applied changes
     """
 
 async def handle_command(self, method_name: str, params: dict) -> Any:
     """
-    Обрабатывает входящую команду.
-    Сначала пытается выполнить через драйвер, затем через внутренние методы.
+    Handles an incoming command.
+    First tries to execute via the driver, then via internal methods.
     
-    Параметры:
-        method_name: Имя команды
-        params: Параметры команды
+    Parameters:
+        method_name: Command name
+        params: Command parameters
     
-    Возвращает:
-        Результат выполнения команды
+    Returns:
+        Command execution result
     """
 ```
 
-### Методы управления задачами (из TaskManagerMixin)
+### Task Management Methods (from TaskManagerMixin)
 
 ```python
 def create_task(self, coro, name: str = None):
     """
-    Создает фоновую задачу, которая будет автоматически отменена при остановке.
+    Creates a background task that will be automatically cancelled on shutdown.
     
-    Параметры:
-        coro: Корутина для выполнения
-        name: Имя задачи для логирования
+    Parameters:
+        coro: Coroutine to execute
+        name: Task name for logging
     """
 
 async def cancel_all_tasks(self):
-    """Отменяет все фоновые задачи устройства."""
+    """Cancels all background tasks of the device."""
 ```
 
-### Методы телеметрии, публикации и асинхронных callback
+### Telemetry, Publishing, and Async Callback Methods
 
 ```python
 enable_telemetry: bool = True
-    """Флаг автоматической публикации телеметрии. Можно переопределить в подклассе."""
+    """Flag for automatic telemetry publishing. Can be overridden in a subclass."""
 
 async def send_command(self, target_device_id: str, method: str, params: dict, timeout: float = 10.0) -> None:
-    """Отправляет команду на другое устройство через MQTT."""
+    """Sends a command to another device via MQTT."""
 
 async def publish_telemetry(self, data: dict) -> None:
-    """Публикует пакет телеметрии."""
+    """Publishes a telemetry packet."""
 
 async def start_telemetry(self) -> None:
-    """Запускает циклы публикации телеметрии по полям с freq."""
+    """Starts telemetry publishing loops for fields with freq."""
 
 async def read_telemetry_value(self, field_name: str) -> Any:
-    """Считывает значение telemetry-поля из драйвера."""
+    """Reads a telemetry field value from the driver."""
 
 async def handle_telemetry_update(self, field_names: list[str]) -> Optional[dict[str, Any]]:
-    """Собирает текущие значения указанных telemetry-полей."""
+    """Collects current values of the specified telemetry fields."""
 
 def register_async_callback(self, topic: str, callback) -> None:
-    """Регистрирует async callback для произвольного MQTT-топика."""
+    """Registers an async callback for an arbitrary MQTT topic."""
 
 def unregister_async_callback(self, topic: str) -> None:
-    """Убирает ранее зарегистрированный async callback."""
+    """Removes a previously registered async callback."""
 ```
 
-## Функции для определения полей
+## Field Definition Functions
 
-Эти функции используются для декларативного определения полей в классах `Device`.
+These functions are used for declarative field definitions in `Device` classes.
 
 ### `telemetry`
 
-Определяет поле телеметрии - данные, которые устройство периодически отправляет.
+Defines a telemetry field — data that the device periodically sends.
 
 ```python
 def telemetry(
@@ -990,26 +1016,26 @@ def telemetry(
     **metadata: Any,
 ) -> Any:
     """
-    Определяет поле телеметрии (данные, отправляемые устройством).
+    Defines a telemetry field (data sent by the device).
     
-    Параметры:
-        default: Значение по умолчанию
-        unit: Единица измерения (например, "°C", "%", "V")
-        freq: Частота публикации (например, "5s", "1m", "100ms")
-        description: Описание поля
-        min: Минимальное значение для валидации
-        max: Максимальное значение для валидации
-        required: Обязательное поле
-        **metadata: Дополнительные метаданные
+    Parameters:
+        default: Default value
+        unit: Unit of measurement (e.g., "°C", "%", "V")
+        freq: Publishing frequency (e.g., "5s", "1m", "100ms")
+        description: Field description
+        min: Minimum value for validation
+        max: Maximum value for validation
+        required: Required field
+        **metadata: Additional metadata
     
-    Пример:
-        temperature: float = telemetry(unit="°C", freq="5s", description="Температура")
+    Example:
+        temperature: float = telemetry(unit="°C", freq="5s", description="Temperature")
     """
 ```
 
 ### `state`
 
-Определяет поле состояния - данные, которые можно читать и изменять извне.
+Defines a state field — data that can be read and modified externally.
 
 ```python
 def state(
@@ -1024,102 +1050,102 @@ def state(
     **metadata: Any,
 ) -> Any:
     """
-    Определяет поле состояния (данные, которые можно читать и изменять).
+    Defines a state field (data that can be read and modified).
     
-    Параметры:
-        default: Значение по умолчанию
-        writable: Можно ли изменять извне
-        description: Описание поля
-        min: Минимальное значение для валидации
-        max: Максимальное значение для валидации
-        choices: Список допустимых значений
-        required: Обязательное поле
-        **metadata: Дополнительные метаданные
+    Parameters:
+        default: Default value
+        writable: Whether it can be modified externally
+        description: Field description
+        min: Minimum value for validation
+        max: Maximum value for validation
+        choices: List of allowed values
+        required: Required field
+        **metadata: Additional metadata
     
-    Пример:
-        power: bool = state(default=False, writable=True, description="Состояние питания")
+    Example:
+        power: bool = state(default=False, writable=True, description="Power state")
         mode: str = state(default="auto", choices=("auto", "manual", "off"))
     """
 ```
 
 ### `event`
 
-Определяет поле события - однократные уведомления.
+Defines an event field — one-time notifications.
 
 ```python
 def event(description: str = "", **metadata: Any) -> Any:
     """
-    Определяет поле события (например, нажатие кнопки, оповещение).
+    Defines an event field (e.g., button press, alert).
     
-    Параметры:
-        description: Описание события
-        **metadata: Дополнительные метаданные
+    Parameters:
+        description: Event description
+        **metadata: Additional metadata
     
-    Пример:
-        button_pressed = event(description="Нажатие кнопки")
+    Example:
+        button_pressed = event(description="Button press")
     
-    Использование:
+    Usage:
         await self.emit("button_pressed", {"button": "power"})
     """
 ```
 
 ### `config`
 
-Определяет поле конфигурации - параметры, задаваемые при инициализации.
+Defines a configuration field — parameters set during initialization.
 
 ```python
 def config(default: Any = None, **metadata: Any) -> Any:
     """
-    Определяет поле конфигурации.
+    Defines a configuration field.
     
-    Параметры:
-        default: Значение по умолчанию
-        **metadata: Дополнительные метаданные
+    Parameters:
+        default: Default value
+        **metadata: Additional metadata
     
-    Пример:
-        host: str = config(default="localhost", description="Адрес хоста")
+    Example:
+        host: str = config(default="localhost", description="Host address")
         port: int = config(default=8080)
     """
 ```
 
-## Декоратор `command`
+## `command` Decorator
 
 ```python
 def command(func: Any) -> Any:
     """
-    Декоратор для методов класса устройства, которые должны быть доступны как команды RPC.
+    Decorator for device class methods that should be available as RPC commands.
     
-    Команды могут быть вызваны:
-    - Через MQTT (топик Kamio/v1/{device_id}/sc)
-    - Напрямую из Python кода
-    - Из других устройств через app.devices
+    Commands can be invoked:
+    - Via MQTT (topic Kamio/v1/{device_id}/sc)
+    - Directly from Python code
+    - From other devices via app.devices
     
-    Пример:
+    Example:
         @command
         async def set_brightness(self, value: int):
             self.brightness = value
             await self.request_state_sync()
             return {"brightness": self.brightness}
     
-    Команды могут быть синхронными или асинхронными.
+    Commands can be sync or async.
     """
 ```
 
-## Декоратор `rule`
+## `rule` Decorator
 
 ```python
 def rule(func: Any = None, *, fields: Optional[list] = None, description: Optional[str] = None) -> Any:
     """
-    Декоратор для методов класса устройства, которые автоматически регистрируются как правила.
+    Decorator for device class methods that are automatically registered as rules.
 
-    Правила привязываются к устройству и реагируют на изменения указанных полей.
-    При регистрации класса устройства правила из Kamio_RULES добавляются в RuleEngine.
+    Rules are bound to the device and react to changes in specified fields.
+    When a device class is registered, rules from Kamio_RULES are added to the RuleEngine.
 
-    Параметры:
-        fields: Список имён полей, при изменении которых вызывается правило
-        description: Описание правила
+    Parameters:
+        fields: List of field names that trigger the rule on change
+        description: Rule description
 
-    Пример:
+    Example:
         class SmartLight(Device):
             power: bool = state(default=False, writable=True)
 
@@ -1132,220 +1158,243 @@ def rule(func: Any = None, *, fields: Optional[list] = None, description: Option
 
 ## `Config`
 
-Класс для управления конфигурацией приложения Kamio Core, поддерживающий загрузку из JSON-файлов и переопределение через переменные окружения.
+Class for managing Kamio Core application configuration, supporting loading from JSON files and overriding via environment variables.
 
-### Инициализация
+### Initialization
 
 ```python
 class Config:
     def __init__(self, config_path: Optional[str] = None):
         """
-        Инициализация конфигурации.
+        Configuration initialization.
         
-        Параметры:
-            config_path: Путь к JSON файлу конфигурации
+        Parameters:
+            config_path: Path to JSON configuration file
         
-        Приоритет значений:
-            1. Переменные окружения (префикс Kamio_)
-            2. Файл конфигурации
-            3. Значения по умолчанию
+        Value priority:
+            1. Environment variables (Kamio_ prefix)
+            2. Configuration file
+            3. Default values
         """
 ```
 
-### Методы
+### Methods
 
 ```python
 def get(self, key: str, default: Any = None, cast: Optional[Callable] = None) -> Any:
     """
-    Получает значение конфигурации по ключу.
+    Gets a configuration value by key.
 
-    Параметры:
-        key: Ключ конфигурации
-        default: Значение по умолчанию
-        cast: Функция для преобразования значения (int, float, bool и т.д.)
+    Parameters:
+        key: Configuration key
+        default: Default value
+        cast: Function to cast the value (int, float, bool, etc.)
 
-    Возвращает:
-        Значение конфигурации
+    Returns:
+        Configuration value
 
-    Пример:
+    Example:
         broker = config.get("mqtt_broker", "mqtt://localhost:1883")
     """
 ```
 
-### Свойства
+### Properties
 
 ```python
 @property
 def mqtt_broker(self) -> str:
-    """Возвращает адрес MQTT-брокера."""
+    """Returns the MQTT broker address."""
 
 @property
 def log_level(self) -> int:
-    """Возвращает уровень логирования."""
+    """Returns the logging level."""
 
 @property
 def settings(self) -> Settings:
-    """Возвращает типизированный объект Settings (mqtt_broker, log_level)."""
+    """Returns a typed Settings object (mqtt_broker, log_level)."""
 ```
 
-### Дополнительные параметры конфигурации
+### Additional Configuration Parameters
 
 ```python
-# Параметры для телеметрии (используются через config.get()):
-telemetry_min_freq: float = 0.1  # Минимальная частота публикации телеметрии в секундах
-                                  # Значения ниже этого будут ограничены до указанного минимума
-                                  # По умолчанию: 0.1 секунды (100 мс)
-                                  # Пример: config.get("telemetry_min_freq", 0.1, cast=float)
+# Parameters for telemetry (used via config.get()):
+telemetry_min_freq: float = 0.1  # Minimum telemetry publishing frequency in seconds
+                                  # Values below this will be clamped to the specified minimum
+                                  # Default: 0.1 seconds (100 ms)
+                                  # Example: config.get("telemetry_min_freq", 0.1, cast=float)
 ```
 
-### Переменные окружения
+### Environment Variables
 
 ```python
-# Поддерживаемые переменные окружения:
-Kamio_MQTT_BROKER      # Адрес MQTT брокера
-Kamio_LOG_LEVEL         # Уровень логирования
+# Supported environment variables:
+Kamio_MQTT_BROKER      # MQTT broker address
+Kamio_LOG_LEVEL         # Logging level
 
-# Вложенные ключи поддерживаются через двойное подчёркивание:
-# Kamio_MQTT__TLS__CAFILE соответствует config.get("mqtt.tls.cafile")
+# Nested keys are supported via double underscore:
+# Kamio_MQTT__TLS__CAFILE corresponds to config.get("mqtt.tls.cafile")
 ```
 
 ## `HADiscovery`
 
-Класс для автоматического обнаружения устройств в Home Assistant через MQTT Discovery.
+Class for automatic device discovery in Home Assistant via MQTT Discovery.
 
-> **Примечание:** текущая реализация `announce` упрощена и не покрывает полное
-> отображение Kamio-полей на компоненты Home Assistant (sensor, switch и т.д.).
-> Полная поддержка discovery находится в разработке.
+> **Note:** the current `announce` implementation is simplified and does not cover the full
+> mapping of Kamio fields to Home Assistant components (sensor, switch, etc.).
+> Full discovery support is under development.
 
-**Новое в v1.0.0b1:** `HADiscovery` создаётся **lazily** — только при вызове `app.enable_ha_discovery()`.
-До этого `app.ha_discovery is None`.
+`HADiscovery` is created **lazily** — only when `app.enable_ha_discovery()` is called.
+Before that, `app.ha_discovery is None`.
 
-Используйте методы `KamioApp`:
+Use `KamioApp` methods:
 ```python
-app.enable_ha_discovery(prefix="homeassistant")  # lazy-init + активация
-app.disable_ha_discovery()                         # отключить (экземпляр не удаляется)
+app.enable_ha_discovery(prefix="homeassistant")  # lazy-init + activation
+app.disable_ha_discovery()                         # disable (instance is not removed)
 ```
 
-До вызова `enable_ha_discovery()` свойство `app.ha_discovery` равно `None`.
+Before calling `enable_ha_discovery()`, the `app.ha_discovery` property is `None`.
 
-### Инициализация (внутренняя)
+### Initialization (Internal)
 
 ```python
 class HADiscovery:
     def __init__(self, discovery_prefix: str = "homeassistant"):
         """
-        Параметры:
-            discovery_prefix: Префикс топиков для HA Discovery (по умолчанию "homeassistant")
+        Parameters:
+            discovery_prefix: Topic prefix for HA Discovery (default "homeassistant")
         """
 ```
 
-### Методы
+### Methods
 
 ```python
 async def announce(self, device: 'Device'):
     """
-    Объявляет устройство в Home Assistant через MQTT.
-    
-    Автоматически маппит поля Kamio на сущности Home Assistant:
+    Announces a device in Home Assistant via MQTT (retained).
+
+    Discovery messages are published with retain=True so Home Assistant
+    can discover devices after restart without waiting for the next
+    announce cycle.
+
+    Automatically maps Kamio fields to Home Assistant entities:
     - telemetry -> sensor
     - state (bool, writable=True) -> switch
     - state (bool, writable=False) -> binary_sensor
-    - state (другие типы) -> sensor
-    
-    Параметры:
-        device: Экземпляр устройства для объявления
-    
-    Пример:
+    - state (int/float, writable=True) -> number
+    - state (str with choices, writable=True) -> select
+    - state (str, writable=True) -> text
+    - state (other types, writable=False) -> sensor
+
+    Parameters:
+        device: Device instance to announce
+
+    Example:
         ha_discovery = HADiscovery()
         await ha_discovery.announce(my_device)
     """
 
+async def clear(self, device: 'Device') -> None:
+    """
+    Removes a device's discovery entries from Home Assistant.
+
+    Publishes an empty retained payload to each of the device's config topics
+    so HA removes the entity. Call when removing a device from the application.
+
+    Parameters:
+        device: Device instance to clear
+
+    Example:
+        await app.ha_discovery.clear(device)
+        await app.remove_device(device_id)
+    """
+
 def _map_to_ha_component(self, field) -> str:
     """
-    Маппит поле Kamio на компонент Home Assistant.
-    
-    Возвращает:
-        Имя компонента HA ("sensor", "switch", "binary_sensor")
+    Maps a Kamio field to a Home Assistant component.
+
+    Returns:
+        HA component name ("sensor", "switch", "binary_sensor",
+        "number", "select", "text") or an empty string for unknown types.
     """
 ```
 
-## Драйверы (`Kamio.drivers`)
+## Drivers (`Kamio.drivers`)
 
-Модуль `Kamio.drivers` содержит базовый класс для аппаратных драйверов и различные реализации драйверов для взаимодействия с реальным оборудованием.
+The `Kamio.drivers` module contains the base class for hardware drivers and various driver implementations for interacting with real equipment.
 
 ### `BaseDriver`
 
-Абстрактный базовый класс, от которого должны наследоваться все драйверы.
+Abstract base class that all drivers must inherit from.
 
 ```python
 class BaseDriver(ABC):
     """
-    Базовый класс для всех драйверов Kamio.
-    Определяет интерфейс для взаимодействия с оборудованием.
+    Base class for all Kamio drivers.
+    Defines the interface for hardware interaction.
     """
     
     def __init__(self):
-        """Инициализация драйвера."""
+        """Driver initialization."""
         self.logger = logging.getLogger(f"Kamio.driver.{self.__class__.__name__}")
     
     @abstractmethod
     async def connect(self) -> None:
         """
-        Устанавливает соединение с аппаратным обеспечением или сервисом.
-        Должен быть переопределен в подклассах.
+        Establishes a connection to the hardware or service.
+        Must be overridden in subclasses.
         """
         pass
 
     @abstractmethod
     async def disconnect(self) -> None:
         """
-        Разрывает соединение с аппаратным обеспечением или сервисом.
-        Должен быть переопределен в подклассах.
+        Disconnects from the hardware or service.
+        Must be overridden in subclasses.
         """
         pass
 
     @abstractmethod
     async def execute(self, command_name: str, params: Dict[str, Any]) -> Any:
         """
-        Выполняет команду на аппаратном обеспечении или сервисе.
+        Executes a command on the hardware or service.
         
-        Параметры:
-            command_name: Имя команды
-            params: Параметры команды
+        Parameters:
+            command_name: Command name
+            params: Command parameters
         
-        Возвращает:
-            Результат выполнения команды
+        Returns:
+            Command execution result
         """
         pass
 
     @abstractmethod
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """
-        Считывает значение поля с аппаратного обеспечения или сервиса.
+        Reads a field value from the hardware or service.
 
-        Параметры:
-            field_name: Имя поля для чтения
-            params:     Дополнительные параметры, специфичные для драйвера
+        Parameters:
+            field_name: Field name to read
+            params:     Additional driver-specific parameters
 
-        Возвращает:
-            Значение поля
+        Returns:
+            Field value
         """
         pass
     
     async def __aenter__(self) -> BaseDriver:
-        """Поддержка контекстного менеджера."""
+        """Context manager support."""
         await self.connect()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Поддержка контекстного менеджера."""
+        """Context manager support."""
         await self.disconnect()
 ```
 
-### Реализованные драйверы:
+### Implemented Drivers:
 
 #### `MockHardwareDriver`
-Имитационный драйвер для тестирования и разработки.
+Mock driver for testing and development.
 
 ```python
 class MockHardwareDriver(BaseDriver):
@@ -1353,240 +1402,240 @@ class MockHardwareDriver(BaseDriver):
                  failure_rate: float = 0.0,
                  initial_state: Optional[Dict[str, Any]] = None):
         """
-        Параметры:
-            latency_range: Диапазон задержки в секундах (min, max)
-            failure_rate:  Вероятность случайного сбоя (0.0 - 1.0)
-            initial_state: Начальное состояние для чтения
+        Parameters:
+            latency_range: Latency range in seconds (min, max)
+            failure_rate:  Probability of random failure (0.0 - 1.0)
+            initial_state: Initial state for reads
         """
 ```
 
 #### `GPIOChipDriver`
-Драйвер для работы с GPIO-чипами (требуется `gpiod`).
+Driver for working with GPIO chips (requires `gpiod`).
 
 ```python
 class GPIOChipDriver(BaseDriver):
     def __init__(self, chip_path: str = "/dev/gpiochip4"):
         """
-        Параметры:
-            chip_path: Путь к GPIO чипу
+        Parameters:
+            chip_path: Path to the GPIO chip
         """
 ```
 
 #### `TelnetDriver`
-Драйвер для взаимодействия с устройствами по Telnet.
+Driver for interacting with devices via Telnet.
 
 ```python
 class TelnetDriver(BaseDriver):
     def __init__(self, host: str, port: int = 23, timeout: float = 5.0,
                  max_reconnect_attempts: int = 3):
         """
-        Параметры:
-            host: Адрес хоста
-            port: Порт (по умолчанию 23)
-            timeout: Таймаут операций
-            max_reconnect_attempts: Количество попыток переподключения
+        Parameters:
+            host: Host address
+            port: Port (default 23)
+            timeout: Operation timeout
+            max_reconnect_attempts: Number of reconnection attempts
         """
 ```
 
 #### `SerialDriver`
-Драйвер для работы с последовательными портами (требуется `pyserial`).
+Driver for working with serial ports (requires `pyserial`).
 
 ```python
 class SerialDriver(BaseDriver):
     def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0):
         """
-        Параметры:
-            port: Порт (например, "/dev/ttyUSB0" или "COM3")
-            baudrate: Скорость передачи
-            timeout: Таймаут чтения/записи в секундах
+        Parameters:
+            port: Port (e.g., "/dev/ttyUSB0" or "COM3")
+            baudrate: Baud rate
+            timeout: Read/write timeout in seconds
         """
 ```
 
 #### `HTTPDeviceDriver`
-Драйвер для взаимодействия с HTTP/RESTful API (требуется `aiohttp`).
+Driver for interacting with HTTP/RESTful API (requires `aiohttp`).
 
 ```python
 class HTTPDeviceDriver(BaseDriver):
     def __init__(self, base_url: str, headers: Optional[Dict[str, str]] = None,
                  timeout: float = 10.0):
         """
-        Параметры:
-            base_url: Базовый URL API
-            headers: Заголовки по умолчанию
-            timeout: Таймаут запросов
+        Parameters:
+            base_url: API base URL
+            headers: Default headers
+            timeout: Request timeout
         """
 ```
 
 #### `UDPDriver`
-Драйвер для UDP-протоколов (request/response или plain send).
+Driver for UDP protocols (request/response or plain send).
 
 ```python
 class UDPDriver(BaseDriver):
     def __init__(self, host: str, port: int, timeout: float = 1.0, local_port: int = 0):
         """
-        Параметры:
-            host:        Целевой хост
-            port:        Целевой порт
-            timeout:     Таймаут ожидания ответа
-            local_port:  Локальный порт (0 — выбор ОС)
+        Parameters:
+            host:        Target host
+            port:        Target port
+            timeout:     Response wait timeout
+            local_port:  Local port (0 — OS-assigned)
         """
 ```
 
-`execute(command_name, params)` отправляет `command_name` (или `params["command"]`, или `params["payload"]`).
-Если `params["wait_response"] == True`, возвращает принятые байты.
-`read(field_name, params)` отправляет `params["command"]` (или `field_name`) и возвращает ответ.
+`execute(command_name, params)` sends `command_name` (or `params["command"]`, or `params["payload"]`).
+If `params["wait_response"] == True`, returns received bytes.
+`read(field_name, params)` sends `params["command"]` (or `field_name`) and returns the response.
 
 #### `ModbusTCPDriver`
-Драйвер для Modbus TCP (pure asyncio, без внешних зависимостей).
+Driver for Modbus TCP (pure asyncio, no external dependencies).
 
 ```python
 class ModbusTCPDriver(BaseDriver):
     def __init__(self, host: str, port: int = 502, unit_id: int = 1, timeout: float = 1.0):
         """
-        Параметры:
-            host:     Адрес Modbus-шлюза
-            port:     Порт (по умолчанию 502)
-            unit_id:  ID slave (по умолчанию 1)
-            timeout:  Таймаут ответа
+        Parameters:
+            host:     Modbus gateway address
+            port:     Port (default 502)
+            unit_id:  Slave ID (default 1)
+            timeout:  Response timeout
         """
 ```
 
-Поддерживаемые команды `execute`:
+Supported `execute` commands:
 - `write_coil` / `coil` — `params["address"]`, `params["value"]` (bool)
 - `write_register` / `register` — `params["address"]`, `params["value"]` (int)
 - `write_registers` / `registers` — `params["address"]`, `params["values"]`
 
-`read(field_name, params)` использует `params["command"]`: `coil`, `discrete`, `holding`, `input` и `address`, `count`.
+`read(field_name, params)` uses `params["command"]`: `coil`, `discrete`, `holding`, `input` and `address`, `count`.
 
-## Внутренние компоненты (`Kamio.core`)
+## Internal Components (`Kamio.core`)
 
-Модуль `Kamio.core` содержит внутренние компоненты фреймворка. Хотя они не предназначены для прямого использования конечными пользователями, их понимание может быть полезно для расширенной разработки.
+The `Kamio.core` module contains internal framework components. While not intended for direct use by end users, understanding them can be useful for advanced development.
 
 ### `DeviceMeta`
-Метакласс, отвечающий за сбор метаданных полей и команд из классов устройств.
+Metaclass responsible for collecting field and command metadata from device classes.
 
 ### `StateManager`
-Управляет состоянием всех зарегистрированных устройств.
+Manages the state of all registered devices.
 
 ```python
 class StateManager:
     def get_state(self, device_id: str, field: Optional[str] = None) -> Any:
-        """Возвращает состояние устройства или отдельное поле."""
+        """Returns device state or a single field."""
     
     def update_state(self, device_id: str, data: Dict[str, Any]) -> None:
-        """Обновляет состояние устройства (в т.ч. из телеметрии)."""
+        """Updates device state (including from telemetry)."""
     
     async def handle_incoming(self, envelope: Envelope):
-        """Обрабатывает входящие сообщения состояния."""
+        """Handles incoming state messages."""
 ```
 
 ### `CommandManager`
-Обрабатывает корреляцию команд и ответов.
+Handles command and response correlation.
 
 ### `RuleEngine`
-Движок для выполнения правил автоматизации.
+Engine for executing automation rules.
 
-**Новое в v1.0.0b1:** Индекс `_event_rules_by_type` поддерживается актуальным в `add_rule`/`remove_rule`
-в любой момент — избыточный `_rebuild_index()` при `start()` удалён. `remove_rule` защищён от двойного удаления.
+The `_event_rules_by_type` index is kept up-to-date in `add_rule`/`remove_rule`
+at all times — the redundant `_rebuild_index()` call during `start()` has been removed. `remove_rule` is protected against double removal.
 
 ```python
 class RuleEngine:
     def add_rule(self, rule: Rule):
-        """Добавляет правило. Индекс обновляется немедленно."""
+        """Adds a rule. Index is updated immediately."""
 
     def remove_rule(self, rule: Rule):
-        """Удаляет правило. Безопасно если правило уже удалено."""
+        """Removes a rule. Safe if the rule is already removed."""
 
     async def handle_device_update(self, device_id: str, data: Dict[str, Any]):
-        """Обрабатывает обновление устройства и запускает совпадающие правила."""
+        """Handles a device update and triggers matching rules."""
 
     async def start(self):
-        """Запускает движок: стартует interval-правила как asyncio.Task."""
+        """Starts the engine: starts interval-rules as asyncio.Task."""
 
     async def stop(self):
-        """Останавливает движок: отменяет все interval-задачи."""
+        """Stops the engine: cancels all interval-tasks."""
 ```
 
 ### `DeviceRegistry`
-Хранит зарегистрированные классы и экземпляры устройств.
+Stores registered device classes and instances.
 
 ```python
 class DeviceRegistry:
     def register_class(self, device_class: Type[Device]):
-        """Регистрирует класс устройства."""
+        """Registers a device class."""
     
     def register_instance(self, device_id: str, instance: Device):
-        """Регистрирует экземпляр устройства."""
+        """Registers a device instance."""
     
     def get_class(self, device_type: str) -> Type[Device]:
-        """Возвращает класс устройства по типу."""
+        """Returns a device class by type."""
     
     @property
     def classes(self) -> Dict[str, Type[Device]]:
-        """Все зарегистрированные классы."""
+        """All registered classes."""
     
     @property
     def instances(self) -> Dict[str, Device]:
-        """Все зарегистрированные экземпляры."""
+        """All registered instances."""
 ```
 
 ### `ServerNode`, `DeviceNode`
-Абстракции для взаимодействия с MQTT-брокером на стороне сервера и устройства соответственно.
+Abstractions for interacting with the MQTT broker on the server and device side respectively.
 
 ```python
 class ServerNode:
     async def call(self, device_id: str, method: str, params: dict, timeout: float) -> Envelope:
-        """Вызывает команду на устройстве и ждет ответа."""
+        """Calls a command on a device and waits for a response."""
     
     async def set_state(self, device_id: str, state: dict, timeout: float) -> Any:
-        """Устанавливает состояние устройства."""
+        """Sets device state."""
 
 class DeviceNode:
     async def publish(self, envelope: Envelope):
-        """Публикует сообщение."""
+        """Publishes a message."""
     
     async def emit_event(self, event_name: str, payload: dict):
-        """Публикует событие."""
+        """Publishes an event."""
 ```
 
 ### `Envelope`, `EnvelopeType`
-Определяют формат сообщений, используемых для внутренней коммуникации.
+Define the message format used for internal communication.
 
 ```python
 class Envelope:
     @staticmethod
     def state(source: str, data: dict) -> 'Envelope':
-        """Создает сообщение состояния."""
+        """Creates a state message."""
     
     @staticmethod
     def telemetry(source: str, data: dict) -> 'Envelope':
-        """Создает сообщение телеметрии."""
+        """Creates a telemetry message."""
     
     @staticmethod
     def command(source: str, target: str, method: str, params: dict) -> 'Envelope':
-        """Создает команду."""
+        """Creates a command."""
     
     @staticmethod
     def event(source: str, event_name: str, payload: dict) -> 'Envelope':
-        """Создает событие."""
+        """Creates an event."""
     
     @staticmethod
     def keepalive(source: str) -> 'Envelope':
-        """Создает keep-alive сообщение."""
+        """Creates a keep-alive message."""
 
 class EnvelopeType(Enum):
-    DEVICE_STATE = "ds"      # Состояние устройства
-    DEVICE_TELEMETRY = "dt"  # Телеметрия
-    DEVICE_EVENT = "de"      # Событие
-    SERVER_COMMAND = "sc"     # Команда сервера
-    COMMAND_ACK = "ca"       # Подтверждение команды
-    STATE_ACK = "sa"         # Подтверждение состояния
+    DEVICE_STATE = "ds"      # Device state
+    DEVICE_TELEMETRY = "dt"  # Telemetry
+    DEVICE_EVENT = "de"      # Event
+    SERVER_COMMAND = "sc"     # Server command
+    COMMAND_ACK = "ca"       # Command acknowledgment
+    STATE_ACK = "sa"         # State acknowledgment
     KEEPALIVE = "k"          # Keep-alive
-    DEVICE_CONFIG = "conf"   # Конфигурация
+    DEVICE_CONFIG = "conf"   # Configuration
 ```
 
 ### `topics`
-Модуль для управления MQTT-топиками.
+Module for managing MQTT topics.
 
 ```python
 def telemetry(device_id: str) -> str:       # Kamio/v1/{device_id}/dt
@@ -1599,10 +1648,10 @@ def config(device_id: str) -> str:         # Kamio/v1/{device_id}/conf
 def keepalive(device_id: str) -> str:       # Kamio/v1/{device_id}/k
 
 def parse(topic: str) -> Tuple[Optional[str], Optional[str]]:
-    """Парсит Kamio/v1/{id}/{type} или legacy Kamio/{id}/{type}."""
+    """Parses Kamio/v1/{id}/{type} and returns (device_id, type)."""
 
 def get_topic_func(msg_type: EnvelopeType) -> Optional[Callable[[str], str]]:
-    """Возвращает функцию-строитель топика по EnvelopeType."""
+    """Returns a topic builder function by EnvelopeType."""
 
 PREFIX: str = "Kamio"
 VERSION: str = "v1"
@@ -1612,44 +1661,44 @@ TOPIC_MAP: Dict[EnvelopeType, Callable[[str], str]]
 ```
 
 ### `mixins`
-Содержит `TelemetryMixin` для периодической публикации телеметрии и `TaskManagerMixin` для управления фоновыми задачами.
+Contains `TelemetryMixin` for periodic telemetry publishing and `TaskManagerMixin` for managing background tasks.
 
 ### `handlers`
-Содержит `DeviceHandler`, который диспетчеризирует входящие сообщения MQTT для конкретного устройства.
+Contains `DeviceHandler`, which dispatches incoming MQTT messages for a specific device.
 
-**Новое в v1.0.0b1:** При создании `DeviceHandler` инжектирует в `Device` два callback-а:
+On `DeviceHandler` creation, two callbacks are injected into the `Device`:
 - `device._on_state_changed(device_id, field, old, new)` → `app.event_bus.publish(...)`
 - `device._on_rules_trigger(device_id, changes)` → `app.rules.handle_device_update(...)`
 
-Это позволяет `Device` не зависеть напрямую от `KamioApp`.
+This allows `Device` to not depend directly on `KamioApp`.
 
 ```python
 class DeviceHandler:
     async def __call__(self, envelope: Envelope):
-        """Обрабатывает входящее сообщение."""
+        """Handles an incoming message."""
 
     async def _handle_command(self, envelope: Envelope):
-        """Обрабатывает команду → вызывает Device.handle_command() → публикует COMMAND_ACK."""
+        """Handles a command → calls Device.handle_command() → publishes COMMAND_ACK."""
 
     async def _handle_state(self, envelope: Envelope):
-        """Обрабатывает изменение состояния → Device.handle_state() → callbacks."""
+        """Handles a state change → Device.handle_state() → callbacks."""
 
     async def _handle_telemetry(self, envelope: Envelope):
-        """Обрабатывает телеметрию → StateManager.update()."""
+        """Handles telemetry → StateManager.update()."""
 
     async def _handle_event(self, envelope: Envelope):
-        """Обрабатывает событие → Device.handle_event()."""
+        """Handles an event → Device.handle_event()."""
 ```
 
 ---
 
-## Namespace-пакеты v1.0.0b1
+## Namespace Packages
 
-С версии v1.0.0b1 введены два namespace-пакета для логической группировки:
+Two namespace packages are provided for logical grouping:
 
 ### `Kamio.core.transport`
 
-Транспортный слой. Реэкспортирует:
+Transport layer. Re-exports:
 
 ```python
 from kamio.core.transport import (
@@ -1664,7 +1713,7 @@ from kamio.core.transport import (
 
 ### `Kamio.core.automation`
 
-Слой автоматизации. Реэкспортирует:
+Automation layer. Re-exports:
 
 ```python
 from kamio.core.automation import (
@@ -1675,15 +1724,15 @@ from kamio.core.automation import (
 )
 ```
 
-> Физические файлы остаются в `Kamio/core/` — импорты через `Kamio.core.*` продолжают работать.
+> Physical files remain in `Kamio/core/` — imports via `Kamio.core.*` continue to work.
 
 ---
 
-*Обновлено для Kamio Core v1.0.0a1*
+*Updated for Kamio Core v1.0.0b2*
 
 ---
 
-## Дополнения и уточнения API v1.0.0b1
+## API Additions and Clarifications
 
 ### `RuleEvent`
 
@@ -1695,7 +1744,7 @@ class RuleEvent:
     def get(self, key: str, default: Any = None) -> Any: ...
 ```
 
-### Декоратор `command`
+### `command` Decorator
 
 ```python
 from kamio import command
@@ -1703,10 +1752,10 @@ from kamio import command
 class MyDevice(Device):
     @command
     async def set_brightness(self, value: int) -> Dict[str, Any]:
-        """Команда устройства."""
+        """Device command."""
 ```
 
-### `Device` — инициализация, телеметрия и вспомогательные методы
+### `Device` — Initialization, Telemetry, and Helper Methods
 
 ```python
 from typing import Any, Callable, Dict, List, Optional
@@ -1715,18 +1764,67 @@ from kamio.drivers.base import BaseDriver
 class Device:
     def __init__(self, driver: Optional[BaseDriver] = None, keepalive_interval: float = 30.0, **kwargs) -> None: ...
 
-    # Телеметрия
+    # Telemetry
     async def start_telemetry(self) -> None: ...
     async def publish_telemetry(self, data: Dict[str, Any]) -> None: ...
     async def handle_telemetry_update(self, field_names: List[str]) -> Optional[Dict[str, Any]]: ...
     async def read_telemetry_value(self, field_name: str) -> Any: ...
 
-    # Вспомогательные RPC/utility методы
+    # Helper RPC/utility methods
     async def send_command(self, target_device_id: str, method: str, params: dict, timeout: float = 10.0) -> None: ...
     async def shutdown(self) -> None: ...
     def register_async_callback(self, topic: str, callback: Callable) -> None: ...
     def unregister_async_callback(self, topic: str) -> None: ...
 ```
+
+---
+
+## API Additions
+
+### `MqttConnection`
+
+```python
+from kamio.core.mqtt_connection import MqttConnection
+
+class MqttConnection:
+    def __init__(
+        self,
+        broker_uri: str,
+        client_id: Optional[str] = None,
+        keepalive: int = 60,
+        clean_session: bool = True,
+        protocol: int = 5,
+        transport: str = "tcp",
+        reconnect_min_delay: float = 1.0,
+        reconnect_max_delay: float = 60.0,
+        tls: Optional[dict] = None,
+    ) -> None: ...
+
+    async def connect(self) -> None: ...
+    async def disconnect(self) -> None: ...
+
+    # SUBACK/UNSUBACK correlation
+    async def _wait_for_suback(self, mid: int, timeout: float = 10.0) -> None: ...
+    async def _wait_for_unsuback(self, mid: int, timeout: float = 10.0) -> None: ...
+```
+
+Encapsulates MQTT connection: `gmqtt.Client` creation, URI-based authentication
+(`mqtt://user:pass@host:port`), TLS, and SUBACK/UNSUBACK correlation via
+`asyncio.Event` with bounded cache for early ACKs (limit 1024).
+
+### `PluginLoader` — Circular Dependency Fix
+
+Circular dependency detection for plugins: previously, a local `_visiting` set
+was reset on each recursive `load_plugin` call, leading to infinite recursion.
+Now an instance-level `_loading` set is used, shared across all recursive calls.
+
+### Test Coverage
+
+- **751 unit tests** + 16 stress tests, all passing
+- **Code coverage: 94%** (`--cov-fail-under=90` in CI)
+- All drivers are covered (GPIO, Serial, Modbus, Telnet, UDP, Mock, HTTP),
+  core components (envelope, state, correlation, mqtt_nodes, handlers,
+  hot_reload), plugin loader, lifecycle, device lifecycle, mqtt_connection
 
 ### `HotReloadManager.__init__`
 
@@ -1739,4 +1837,3 @@ def __init__(self, app: KamioApp, poll_interval: float = 1.0, debounce: float = 
 ```python
 async def publish_async(self, topic: str, payload: Any, qos: int = 0, retain: bool = False) -> None: ...
 ```
-

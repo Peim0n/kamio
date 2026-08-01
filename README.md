@@ -1,36 +1,37 @@
-# Kamio v1.0.0b1
+# Kamio v1.0.0b2
 
 ![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)
-![Version](https://img.shields.io/badge/version-1.0.0b1--beta-blue.svg)
+![Version](https://img.shields.io/badge/version-1.0.0b2--beta-blue.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 ![MQTT](https://img.shields.io/badge/MQTT-v5-orange.svg)
+![Coverage](https://img.shields.io/badge/coverage-94%25-brightgreen.svg)
 ![Tests](https://github.com/Peim0n/kamio/actions/workflows/ci.yml/badge.svg)
 
-**Kamio** — декларативный асинхронный IoT-фреймворк для Python на базе MQTT. Описывайте устройства классами, подключайте оборудование драйверами, автоматизируйте правилами.
+**Kamio** is a declarative asynchronous IoT framework for Python built on MQTT. Describe your devices as classes, connect hardware with drivers, and automate with rules.
 
-## Возможности
+## Features
 
-- **Декларативные устройства** — поля `state`, `telemetry`, `event`, `config` через аннотации Python
-- **Драйверы** — GPIO, Serial, Telnet, HTTP, UDP, Modbus TCP, Mock (latency/failure simulation)
-- **MQTT v5** — надёжная коммуникация, авто-реконнект, обратная совместимость с legacy-топиками
-- **Асинхронность** — полностью `asyncio`, никаких блокирующих вызовов в event loop
-- **Правила автоматизации** — реакция на изменения полей и периодические интервалы
-- **Plugin System** — изолированные плагины с автоматическим cleanup через `PluginContext`
-- **Hot-Reload** — перезагрузка правил и устройств без остановки приложения
-- **Custom MQTT Nodes** — произвольные MQTT-узлы с маршрутизацией сообщений
-- **Home Assistant Discovery** — lazy-init, активируется только при вызове `enable_ha_discovery()`
-- **Конфигурация** — JSON-файлы + переменные окружения `Kamio_*`
+- **Declarative devices** — `state`, `telemetry`, `event`, `config` fields via Python annotations
+- **Drivers** — GPIO, Serial, Telnet, HTTP, UDP, Modbus TCP, Mock (latency/failure simulation)
+- **MQTT v5** — reliable communication, auto-reconnect, backward compatibility with legacy topics
+- **Asynchronous** — fully `asyncio`, no blocking calls in the event loop
+- **Automation rules** — react to field changes and periodic intervals
+- **Plugin System** — isolated plugins with automatic cleanup via `PluginContext`
+- **Hot-Reload** — reload rules and devices without stopping the application
+- **Custom MQTT Nodes** — arbitrary MQTT nodes with message routing
+- **Home Assistant Discovery** — lazy-init, activated only when `enable_ha_discovery()` is called
+- **Configuration** — JSON files + `Kamio_*` environment variables
 
-## Установка
+## Installation
 
 ```bash
 pip install kamio
 ```
 
-### Требования
+### Requirements
 
 - Python 3.9+
-- MQTT брокер (рекомендуется Mosquitto)
+- MQTT broker (Mosquitto recommended)
 
 ```bash
 # Ubuntu/Debian
@@ -40,20 +41,20 @@ brew install mosquitto
 # Windows: https://mosquitto.org/download/
 ```
 
-### Дополнительные зависимости
+### Additional Dependencies
 
 ```bash
 pip install kamio[gpio]           # GPIO (gpiod)
 pip install kamio[serial]          # Serial (pyserial)
 pip install kamio[http]            # HTTP (aiohttp)
-pip install kamio[all-drivers]   # все внешние зависимости драйверов (gpiod, pyserial, aiohttp)
-pip install kamio[dev]            # форматирование, типизация
+pip install kamio[all-drivers]   # all external driver dependencies (gpiod, pyserial, aiohttp)
+pip install kamio[dev]            # formatting, type checking
 pip install kamio[test]           # pytest, pytest-asyncio
 ```
 
-> `UDPDriver`, `TelnetDriver` и `ModbusTCPDriver` используют только стандартную библиотеку Python и доступны без extras.
+> `UDPDriver`, `TelnetDriver`, and `ModbusTCPDriver` use only the Python standard library and are available without extras.
 
-## Быстрый старт
+## Quick Start
 
 ```python
 import asyncio
@@ -86,7 +87,7 @@ async def on_motion(event, app):
 
 
 async def main():
-    # Можно передать драйвер: Serial/Telnet/HTTP/UDP/Modbus TCP
+    # You can pass a driver: Serial/Telnet/HTTP/UDP/Modbus TCP
     # await app.add_device("living_room", SmartLight, driver=TelnetDriver("10.0.0.10"))
     await app.add_device("living_room", SmartLight)
     await app.add_device("hall_sensor", MotionSensor)
@@ -95,13 +96,13 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    # ИЛИ блокирующий запуск с обработкой SIGINT/SIGTERM:
+    # OR blocking startup with SIGINT/SIGTERM handling:
     # app.run()
 ```
 
-## Примеры использования
+## Usage Examples
 
-### Плагины
+### Plugins
 
 ```python
 from kamio.plugins.builtin.metrics_plugin import MetricsPlugin
@@ -110,7 +111,7 @@ metrics = await app.load_plugin(MetricsPlugin)
 print(metrics.get_counter("device_state_changed"))
 ```
 
-### Hot-reload правил
+### Hot-reload rules
 
 ```python
 app.watch_directory("rules/", "*.py", app.hot_reload.make_rules_handler())
@@ -121,10 +122,10 @@ app.enable_hot_reload()
 
 ```python
 app.enable_ha_discovery(prefix="homeassistant")
-# HADiscovery создаётся только здесь, не при инициализации KamioApp
+# HADiscovery is created only here, not during KamioApp initialization
 ```
 
-### Кастомный MQTT-узел
+### Custom MQTT node
 
 ```python
 from kamio.core.custom_nodes import CustomNode
@@ -136,7 +137,7 @@ class BridgeNode(CustomNode):
 app.register_custom_node("bridge", BridgeNode(app.mqtt_client, "bridge"))
 ```
 
-### Конфигурация через файл
+### Configuration via file
 
 ```python
 app = KamioApp(config_path="config.json")
@@ -149,32 +150,33 @@ app = KamioApp(config_path="config.json")
 }
 ```
 
-Или через переменные окружения:
+Or via environment variables:
 ```bash
 Kamio_MQTT_BROKER=mqtt://broker.local:1883
 Kamio_LOG_LEVEL=DEBUG
 ```
 
-## Структура тестов
+## Test Structure
 
 ```
 tests/
-  unit/         # изолированные тесты компонентов
-  stress/       # тесты под нагрузкой
+  unit/         # isolated component tests (751 tests, 94% coverage)
+  stress/       # load tests (16 tests)
 ```
 
 ```bash
-pytest                          # все тесты
-pytest tests/unit/              # только unit
-pytest tests/stress/            # только stress
+pytest                          # all tests
+pytest tests/unit/              # unit only
+pytest tests/stress/            # stress only
+pytest --cov=kamio              # with coverage report
 ```
 
-## Документация
+## Documentation
 
-- [API](docs/api.md) — справочник по всем классам и методам
-- [Архитектура](docs/architecture.md) — детальный обзор архитектуры v1.0.0b1
+- [API](docs/api.md) — reference for all classes and methods v1.0.0b2
+- [Architecture](docs/architecture.md) — detailed architecture overview v1.0.0b2
+- [CHANGELOG](CHANGELOG.md) — changelog
 
-## Лицензия
+## License
 
-Apache-2.0 — см. файл [LICENSE](LICENSE)
-
+Apache-2.0 — see the [LICENSE](LICENSE) file

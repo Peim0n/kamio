@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import random
+
 import pytest
 
-from kamio import Device, KamioApp, command, state, telemetry, rule
+from kamio import Device, KamioApp, command, rule, state, telemetry
 from kamio.core.rules import RuleEvent
 
 
@@ -45,7 +46,9 @@ async def test_command_chain_across_20_apps():
         async def propagate(event: dict, app: KamioApp):
             if i < count - 1 and event.data.get("active") is True:
                 target_id = device_ids[i + 1]
-                await app.devices[device_ids[i]].send_command(target_id, "activate", {}, timeout=60.0)
+                await app.devices[device_ids[i]].send_command(
+                    target_id, "activate", {}, timeout=60.0
+                )
 
         await app.add_device(device_ids[i], Relay)
         return app
@@ -64,7 +67,9 @@ async def test_command_chain_across_20_apps():
     for i, app in enumerate(apps):
         assert app.devices[device_ids[i]].active is True, f"relay_{i} was not activated"
         # Device-level rule should have been triggered
-        assert app.devices[device_ids[i]].rule_activations >= 1, f"relay_{i} device rule not triggered"
+        assert (
+            app.devices[device_ids[i]].rule_activations >= 1
+        ), f"relay_{i} device rule not triggered"
 
     await asyncio.gather(*(app.stop() for app in apps))
 
@@ -169,12 +174,16 @@ async def test_telemetry_state_command_cascade_20_apps():
         @app.rule(device=Sensor, fields=["temp"])
         async def on_sensor_temp(event, app):
             if event.data.get("temp", 20.0) != 20.0:
-                await app.devices[sensor_ids[i]].send_command(relay_ids[i], "activate", {}, timeout=60.0)
+                await app.devices[sensor_ids[i]].send_command(
+                    relay_ids[i], "activate", {}, timeout=60.0
+                )
 
         @app.rule(device=Relay, fields=["status"])
         async def on_relay_status(event, app):
             if i < count - 1 and event.data.get("status") == "on":
-                await app.devices[relay_ids[i]].send_command(sensor_ids[i + 1], "bump", {}, timeout=60.0)
+                await app.devices[relay_ids[i]].send_command(
+                    sensor_ids[i + 1], "bump", {}, timeout=60.0
+                )
 
         await app.add_device(sensor_ids[i], Sensor)
         await app.add_device(relay_ids[i], Relay)
@@ -240,17 +249,23 @@ async def test_three_devices_per_app_full_cross_talk_20x3():
         @app.rule(device=Switch, fields=["power"])
         async def switch_drives_sensor(event, app):
             if event.data.get("power") is True:
-                await app.devices[switch_ids[i]].send_command(sensor_ids[i], "sample", {}, timeout=60.0)
+                await app.devices[switch_ids[i]].send_command(
+                    sensor_ids[i], "sample", {}, timeout=60.0
+                )
 
         @app.rule(device=Sensor, fields=["reading"])
         async def sensor_drives_actuator(event, app):
             if event.data.get("reading", 0.0) > 0.0:
-                await app.devices[sensor_ids[i]].send_command(actuator_ids[i], "move", {}, timeout=60.0)
+                await app.devices[sensor_ids[i]].send_command(
+                    actuator_ids[i], "move", {}, timeout=60.0
+                )
 
         @app.rule(device=Actuator, fields=["moved"])
         async def actuator_chains_to_next(event, app):
             if i < app_count - 1 and event.data.get("moved") is True:
-                await app.devices[actuator_ids[i]].send_command(switch_ids[i + 1], "turn_on", {}, timeout=60.0)
+                await app.devices[actuator_ids[i]].send_command(
+                    switch_ids[i + 1], "turn_on", {}, timeout=60.0
+                )
 
         await app.add_device(switch_ids[i], Switch)
         await app.add_device(sensor_ids[i], Sensor)
@@ -395,12 +410,16 @@ async def test_20_apps_100_devices_random_interactions():
                 if src_app == tgt_app:
                     await apps[tgt_app].devices[tgt_id].handle_command("ping", {})
                 else:
-                    await apps[src_app].devices[src_id].send_command(tgt_id, "ping", {}, timeout=60.0)
+                    await apps[src_app].devices[src_id].send_command(
+                        tgt_id, "ping", {}, timeout=60.0
+                    )
             elif action == "arm":
                 if src_app == tgt_app:
                     await apps[tgt_app].devices[tgt_id].handle_command("arm", {})
                 else:
-                    await apps[src_app].devices[src_id].send_command(tgt_id, "arm", {}, timeout=60.0)
+                    await apps[src_app].devices[src_id].send_command(
+                        tgt_id, "arm", {}, timeout=60.0
+                    )
             elif action == "set_arm":
                 await apps[tgt_app].devices[tgt_id].handle_command("arm", {})
             else:  # telemetry
@@ -410,13 +429,9 @@ async def test_20_apps_100_devices_random_interactions():
     await asyncio.sleep(2.0)
 
     total_pings = sum(
-        apps[i].devices[f"counter_{i}_{j}"].pings
-        for i in range(count_apps)
-        for j in range(per_app)
+        apps[i].devices[f"counter_{i}_{j}"].pings for i in range(count_apps) for j in range(per_app)
     )
-    assert total_pings == interactions, (
-        f"expected {interactions} total pings, got {total_pings}"
-    )
+    assert total_pings == interactions, f"expected {interactions} total pings, got {total_pings}"
 
     # Verify device-level rules were triggered
     total_device_rule_hits = sum(
@@ -477,12 +492,16 @@ async def test_2_apps_1000_devices_random_interactions():
                 if src_app == tgt_app:
                     await apps[tgt_app].devices[tgt_id].handle_command("ping", {})
                 else:
-                    await apps[src_app].devices[src_id].send_command(tgt_id, "ping", {}, timeout=60.0)
+                    await apps[src_app].devices[src_id].send_command(
+                        tgt_id, "ping", {}, timeout=60.0
+                    )
             elif action == "arm":
                 if src_app == tgt_app:
                     await apps[tgt_app].devices[tgt_id].handle_command("arm", {})
                 else:
-                    await apps[src_app].devices[src_id].send_command(tgt_id, "arm", {}, timeout=60.0)
+                    await apps[src_app].devices[src_id].send_command(
+                        tgt_id, "arm", {}, timeout=60.0
+                    )
             elif action == "set_arm":
                 await apps[tgt_app].devices[tgt_id].handle_command("arm", {})
             else:  # telemetry
@@ -492,13 +511,9 @@ async def test_2_apps_1000_devices_random_interactions():
     await asyncio.sleep(2.0)
 
     total_pings = sum(
-        apps[i].devices[f"counter_{i}_{j}"].pings
-        for i in range(count_apps)
-        for j in range(per_app)
+        apps[i].devices[f"counter_{i}_{j}"].pings for i in range(count_apps) for j in range(per_app)
     )
-    assert total_pings == interactions, (
-        f"expected {interactions} total pings, got {total_pings}"
-    )
+    assert total_pings == interactions, f"expected {interactions} total pings, got {total_pings}"
 
     # Verify device-level rules were triggered
     total_device_rule_hits = sum(
@@ -589,11 +604,9 @@ async def test_20_types_10_each_maximum_load():
     await asyncio.gather(*(act(i) for i in range(interactions)))
     await asyncio.sleep(10.0)
 
-    total_calls = sum(
-        app.devices[dev_id].calls
-        for ids in device_ids_by_type
-        for dev_id in ids
-    )
-    assert total_calls >= int(interactions * 0.4), f"expected at least {int(interactions * 0.4)} calls, got {total_calls}"
+    total_calls = sum(app.devices[dev_id].calls for ids in device_ids_by_type for dev_id in ids)
+    assert total_calls >= int(
+        interactions * 0.4
+    ), f"expected at least {int(interactions * 0.4)} calls, got {total_calls}"
 
     await app.stop()

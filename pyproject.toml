@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kamio"
-version = "1.0.0b1"
-description = "Декларативный асинхронный IoT-фреймворк для Python с поддержкой MQTT"
+version = "1.0.0b2"
+description = "Declarative asynchronous IoT framework for Python with MQTT support"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 authors = [
@@ -30,17 +30,20 @@ classifiers = [
 ]
 
 dependencies = [
-    "gmqtt==0.7.0",
+    "gmqtt>=0.7.0",
 ]
 
 [project.optional-dependencies]
-# Драйверы
+# Drivers
 gpio = ["gpiod>=1.6.0"]
 serial = ["pyserial>=3.5"]
 http = ["aiohttp>=3.8.0"]
 all-drivers = ["gpiod>=1.6.0", "pyserial>=3.5", "aiohttp>=3.8.0"]
 
-# Разработка
+# Hot-reload (optional OS-level file watching)
+hot-reload = ["watchdog>=3.0"]
+
+# Development
 dev = [
     "black>=23.0",
     "isort>=5.12",
@@ -48,7 +51,7 @@ dev = [
     "pylint>=2.17",
 ]
 
-# Тестирование
+# Testing
 test = [
     "pytest>=7.4",
     "pytest-asyncio>=0.21",
@@ -56,11 +59,12 @@ test = [
     "pytest-mock>=3.11",
 ]
 
-# Полный набор
+# Full bundle
 full = [
     "gpiod>=1.6.0",
     "pyserial>=3.5",
     "aiohttp>=3.8.0",
+    "watchdog>=3.0",
     "black>=23.0",
     "isort>=5.12",
     "mypy>=1.0",

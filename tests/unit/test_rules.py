@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from kamio import Device, KamioApp, state, rule
+
+from kamio import Device, KamioApp, rule, state
 from kamio.core.rules import RuleEvent
 
 
@@ -34,7 +35,6 @@ class CounterDevice(Device):
     async def on_count_change(self, event: RuleEvent, app: KamioApp):
         """Device-level rule that tracks how many times it was called."""
         self.rule_calls += 1
-
 
 
 @pytest.mark.asyncio
@@ -178,10 +178,10 @@ async def test_rule_errors_do_not_stop_other_rules():
 async def test_device_level_rule_auto_registered():
     """Device-level @rule decorator should auto-register when device class is registered."""
     app = KamioApp()
-    
+
     # Register the device class - this should auto-register the @rule method
     app.register(SmartLight)
-    
+
     # Check that the rule was added to the rule engine
     assert len(app.rules.rules) == 1
     rule = app.rules.rules[0]
@@ -193,17 +193,17 @@ async def test_device_level_rule_auto_registered():
 async def test_device_level_rule_executes_on_state_change():
     """Device-level rule should execute when its monitored field changes."""
     app = KamioApp()
-    
+
     device = await app.add_device("light1", SmartLight)
     assert device.brightness == 100
     assert device.power is False
-    
+
     # Change power - should trigger device-level rule
     await device.handle_state({"power": True})
-    
+
     # Rule should have changed brightness
     assert device.brightness == 200
-    
+
     # Change power back
     await device.handle_state({"power": False})
     assert device.brightness == 100
@@ -213,14 +213,14 @@ async def test_device_level_rule_executes_on_state_change():
 async def test_device_level_rule_with_field_filter():
     """Device-level rule with field filter should only trigger on specified fields."""
     app = KamioApp()
-    
+
     device = await app.add_device("counter1", CounterDevice)
     assert device.rule_calls == 0
-    
+
     # Change count - should trigger rule
     await device.handle_state({"count": 5})
     assert device.rule_calls == 1
-    
+
     # Change count again
     await device.handle_state({"count": 10})
     assert device.rule_calls == 2
@@ -230,13 +230,13 @@ async def test_device_level_rule_with_field_filter():
 async def test_device_level_rule_ignores_other_fields():
     """Device-level rule should not trigger when other fields change."""
     app = KamioApp()
-    
+
     device = await app.add_device("light1", SmartLight)
     assert device.brightness == 100
-    
+
     # Change brightness (not monitored by the rule)
     await device.handle_state({"brightness": 150})
-    
+
     # Rule should NOT have changed brightness back to 100
     assert device.brightness == 150
 
@@ -246,16 +246,16 @@ async def test_device_level_rule_with_app_level_rule_coexist():
     """Device-level and app-level rules should coexist and both trigger."""
     app = KamioApp()
     app_level_calls = []
-    
+
     @app.rule(device=SmartLight, fields=["power"])
     async def app_level_rule(event: RuleEvent, app: KamioApp):
         app_level_calls.append(event.data)
-    
+
     device = await app.add_device("light1", SmartLight)
-    
+
     # Change power - both rules should trigger
     await device.handle_state({"power": True})
-    
+
     # Device-level rule changed brightness
     assert device.brightness == 200
     # App-level rule was called
@@ -266,31 +266,32 @@ async def test_device_level_rule_with_app_level_rule_coexist():
 @pytest.mark.asyncio
 async def test_multiple_device_level_rules_on_same_device():
     """Multiple device-level rules on the same device should all work."""
+
     class MultiRuleDevice(Device):
         value: int = state(default=0, writable=True)
         flag: bool = state(default=False, writable=True)
         rule1_calls = 0
         rule2_calls = 0
-        
+
         @rule(fields=["value"])
         async def on_value_change(self, event: RuleEvent, app: KamioApp):
             self.rule1_calls += 1
-        
+
         @rule(fields=["flag"])
         async def on_flag_change(self, event: RuleEvent, app: KamioApp):
             self.rule2_calls += 1
-    
+
     app = KamioApp()
     device = await app.add_device("multi1", MultiRuleDevice)
-    
+
     # Both rules should be registered
     assert len(app.rules.rules) == 2
-    
+
     # Trigger first rule
     await device.handle_state({"value": 42})
     assert device.rule1_calls == 1
     assert device.rule2_calls == 0
-    
+
     # Trigger second rule
     await device.handle_state({"flag": True})
     assert device.rule1_calls == 1
@@ -300,22 +301,23 @@ async def test_multiple_device_level_rules_on_same_device():
 @pytest.mark.asyncio
 async def test_device_level_rule_accesses_self_correctly():
     """Device-level rule should properly access self (device instance)."""
+
     class SelfAccessDevice(Device):
         value: int = state(default=0, writable=True)
         last_self = None
-        
+
         @rule(fields=["value"])
         async def on_value_change(self, event: RuleEvent, app: KamioApp):
             # Store reference to self to verify it's the device instance
             self.last_self = self
             # Verify we can access other device state
             self.value = event.data.get("value", 0) * 2
-    
+
     app = KamioApp()
     device = await app.add_device("self1", SelfAccessDevice)
-    
+
     await device.handle_state({"value": 5})
-    
+
     # Rule should have doubled the value
     assert device.value == 10
     # self should be the device instance
@@ -325,34 +327,67 @@ async def test_device_level_rule_accesses_self_correctly():
 @pytest.mark.asyncio
 async def test_device_level_rule_inheritance():
     """Device-level rules should be inherited from base classes."""
+
     class BaseDevice(Device):
         value: int = state(default=0, writable=True)
         base_rule_calls = 0
-        
+
         @rule(fields=["value"])
         async def base_rule(self, event: RuleEvent, app: KamioApp):
             self.base_rule_calls += 1
-    
+
     class DerivedDevice(BaseDevice):
         extra: str = state(default="test", writable=True)
         derived_rule_calls = 0
-        
+
         @rule(fields=["extra"])
         async def derived_rule(self, event: RuleEvent, app: KamioApp):
             self.derived_rule_calls += 1
-    
+
     app = KamioApp()
     device = await app.add_device("derived1", DerivedDevice)
-    
+
     # Both rules should be registered (from base and derived)
     assert len(app.rules.rules) == 2
-    
+
     # Trigger base rule
     await device.handle_state({"value": 1})
     assert device.base_rule_calls == 1
     assert device.derived_rule_calls == 0
-    
+
     # Trigger derived rule
     await device.handle_state({"extra": "changed"})
     assert device.base_rule_calls == 1
     assert device.derived_rule_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_set_rules_replaces_rule_set_and_cancels_tasks():
+    """set_rules should atomically replace the rule set and await cancelled tasks."""
+    from kamio.core.rules import Rule, RuleEngine
+
+    engine = RuleEngine(KamioApp())
+
+    async def _r1(event, app):
+        pass
+
+    async def _r2(event, app):
+        pass
+
+    r1 = Rule(_r1, interval=0.01)
+    r2 = Rule(_r2, interval=0.01)
+    engine.add_rule(r1)
+    engine.add_rule(r2)
+    await engine.start()
+    # Both interval tasks should be running.
+    assert r1.task is not None and not r1.task.done()
+    assert r2.task is not None and not r2.task.done()
+
+    # Replace with an empty rule set — old tasks must be cancelled & awaited.
+    await engine.set_rules([])
+    assert len(engine.rules) == 0
+    # Give cancelled tasks a moment to settle.
+    await asyncio.sleep(0.01)
+    assert r1.task.done()
+    assert r2.task.done()
+    await engine.stop()

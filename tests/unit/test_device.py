@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from kamio import Device, command, config, event, state, telemetry
 
 
@@ -86,6 +88,22 @@ async def test_device_instance_initializes_defaults():
     assert device.mode == "auto"
     assert device.temperature == 20.0
     assert device.host == "localhost"
+
+
+@pytest.mark.asyncio
+async def test_device_constructor_kwargs_applied_to_state_fields():
+    """Constructor kwargs matching state field names should set field values."""
+    device = ExampleDevice(power=True, brightness=50, mode="manual")
+    assert device.power is True
+    assert device.brightness == 50
+    assert device.mode == "manual"
+
+
+@pytest.mark.asyncio
+async def test_device_constructor_ignores_non_field_kwargs():
+    """Constructor kwargs that don't match any field should be silently ignored."""
+    device = ExampleDevice(unknown_param="ignored")
+    assert device.power is False  # default preserved
 
 
 @pytest.mark.asyncio

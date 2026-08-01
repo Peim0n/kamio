@@ -1,8 +1,9 @@
 from __future__ import annotations
+
 import asyncio
 import inspect
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from kamio.core.envelope import Envelope, EnvelopeType
 
@@ -37,6 +38,14 @@ class DeviceHandler:
         state_manager: Optional[StateManager] = None,
         debug: bool = False,
     ):
+        """Initialize the handler for a single device.
+
+        Args:
+            device: The Device instance this handler routes messages for.
+            node: The DeviceNode providing MQTT transport.
+            state_manager: Optional StateManager for state mirroring/resolution.
+            debug: If True, re-raise exceptions instead of sending error ACKs.
+        """
         self.device = device
         self.node = node
         self.state_manager = state_manager
@@ -45,13 +54,19 @@ class DeviceHandler:
 
         app = getattr(device, "_app", None)
         if app is not None:
-            async def _on_state_changed(device_id: str, field: str, old_val: Any, new_val: Any) -> None:
-                await app.event_bus.publish("device_state_changed", {
-                    "device_id": device_id,
-                    "field": field,
-                    "old_value": old_val,
-                    "new_value": new_val,
-                })
+
+            async def _on_state_changed(
+                device_id: str, field: str, old_val: Any, new_val: Any
+            ) -> None:
+                await app.event_bus.publish(
+                    "device_state_changed",
+                    {
+                        "device_id": device_id,
+                        "field": field,
+                        "old_value": old_val,
+                        "new_value": new_val,
+                    },
+                )
 
             async def _on_rules_trigger(device_id: str, changes: Dict[str, Any]) -> None:
                 await app.rules.handle_device_update(device_id, changes)
@@ -78,7 +93,10 @@ class DeviceHandler:
             self.logger.exception(f"Error handling {env.type}: {e}")
             if self.debug:
                 raise
-            await self.send_error(env, str(e))
+            try:
+                await self.send_error(env, str(e))
+            except Exception as send_err:
+                self.logger.error(f"Failed to send error ACK: {send_err}")
 
     async def _handle_command(self, env: Envelope):
         """Execute a SERVER_COMMAND and reply with COMMAND_ACK (or error)."""
@@ -89,6 +107,7 @@ class DeviceHandler:
         )
 
         try:
+            # Inject node/app kwargs if the command method's signature accepts them.
             method = self.device.Kamio_COMMANDS.get(method_name)
             if method is not None:
                 sig = inspect.signature(method)
@@ -100,9 +119,24 @@ class DeviceHandler:
                 if extra:
                     params = {**params, **extra}  # merge injected kwargs
 
+            # Route set_<field> commands to handle_state for HA compatibility.
+            if method is None and method_name.startswith("set_"):
+                field_name = method_name[4:]
+                value = params.get("value", params.get("field_value"))
+                if field_name in self.device.Kamio_FIELDS:
+                    applied = await self.device.handle_state({field_name: value})
+                    await self.send_ack(
+                        env,
+                        result={"result": applied},
+                        response_type=EnvelopeType.COMMAND_ACK,
+                    )
+                    return
+
             result = await self.device.handle_command(method_name, params)
             await self.send_ack(
-                env, result={"result": result or {}}, response_type=EnvelopeType.COMMAND_ACK
+                env,
+                result={"result": result if result is not None else {}},
+                response_type=EnvelopeType.COMMAND_ACK,
             )
         except Exception as e:
             if self.debug:
@@ -115,21 +149,27 @@ class DeviceHandler:
 
     async def _handle_state(self, env: Envelope):
         """Apply a DEVICE_STATE update and reply with STATE_ACK (or error)."""
-        if env.cind in self.device._own_state_cinds:
-            # Our own echo; already applied locally, no need to re-apply.
-            self.device._own_state_cinds.discard(env.cind)
+        with self.device._cinds_lock:
+            is_own_echo = env.cind in self.device._own_state_cinds
+            if is_own_echo:
+                # Our own echo; already applied locally, no need to re-apply.
+                self.device._own_state_cinds.discard(env.cind)
+                try:
+                    self.device._own_state_cinds_order.remove(env.cind)
+                except (AttributeError, ValueError):
+                    # _own_state_cinds_order may not exist on older Device instances.
+                    pass
+        if is_own_echo:
             return
         try:
             applied = await self.device.handle_state(env.data)
 
-            if not applied:
-                # Nothing changed (e.g. duplicate update);
-                # no need to sync state back or acknowledge.
-                return
-
             if self.state_manager:
                 await self.state_manager.handle_incoming(env)
 
+            # Always send STATE_ACK, even when nothing changed (applied is
+            # empty).  Otherwise the requester waits for an ACK that never
+            # arrives and times out after 10 seconds.
             await self.send_ack(
                 env, result={"result": applied}, response_type=EnvelopeType.STATE_ACK
             )
@@ -143,11 +183,11 @@ class DeviceHandler:
             await self.state_manager.handle_incoming(env)
 
     async def _handle_config(self, env: Envelope):
-        """Apply a DEVICE_CONFIG update and reply with COMMAND_ACK (or error)."""
+        """Apply a DEVICE_CONFIG update and reply with STATE_ACK (or error)."""
         try:
             applied = await self.device.handle_config(env.data)
             await self.send_ack(
-                env, result={"result": applied}, response_type=EnvelopeType.COMMAND_ACK
+                env, result={"result": applied}, response_type=EnvelopeType.STATE_ACK
             )
         except ValueError as e:
             self.logger.warning(f"Config validation failed for device '{self.node.device_id}': {e}")
@@ -185,7 +225,16 @@ class DeviceHandler:
         response_type: Optional[EnvelopeType] = None,
         meta: Optional[Dict[str, Any]] = None,
     ):
-        """Publish an acknowledgement envelope back to the sender."""
+        """Publish an acknowledgement envelope back to the sender.
+
+        Args:
+            original_env:  The envelope being acknowledged (provides cind and source).
+            result:        Optional result dict merged into the ACK ``data``.
+            status:        Status string written to ``data["status"]`` (default ``"ok"``).
+            response_type: Override the envelope type. If ``None``, inferred from
+                           ``original_env.type`` (STATE_ACK for state, COMMAND_ACK otherwise).
+            meta:          Optional metadata dict attached to the ACK envelope.
+        """
         data = result or {}
         data["status"] = status
         final_type = response_type

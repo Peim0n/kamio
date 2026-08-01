@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import asyncio
+import inspect
 import logging
 from collections import defaultdict
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, List, Optional, Tuple, Type
 
 if TYPE_CHECKING:
     from ..app import KamioApp
@@ -27,24 +29,19 @@ class RuleEvent:
                 ...
     """
 
-    __slots__ = ("data", "device_id", "kind", "_raw")
+    __slots__ = ("data", "device_id", "kind")
 
     def __init__(self, data: Dict[str, Any], device_id: Optional[str], kind: str) -> None:
         self.data = data
         self.device_id = device_id
         self.kind = kind
-        self._raw = {"update": data, "device_id": device_id, "type": kind}  # compat shim
-
-    def __getitem__(self, key: str) -> Any:
-        """Backwards compatibility: support ``event["update"]`` / ``event["device_id"]`` access."""
-        return self._raw[key]
 
     def get(self, key: str, default: Any = None) -> Any:
-        if key in self.data:
-            return self.data[key]
-        return self._raw.get(key, default)
+        """Return the value for a key from the event data, or default."""
+        return self.data.get(key, default)
 
     def __repr__(self) -> str:
+        """Return a developer-friendly representation."""
         return f"RuleEvent(device_id={self.device_id!r}, kind={self.kind!r}, data={self.data!r})"
 
 
@@ -57,6 +54,10 @@ class Rule:
 
     Args:
         func:         Async function ``async def fn(event: RuleEvent, app: KamioApp)``.
+                      May also be an unbound device method (decorated with
+                      ``@rule`` inside a ``Device`` subclass) or a bound method;
+                      the engine detects the calling convention and passes
+                      ``self`` for device-level rules automatically.
         device_class: :class:`Device` subclass to filter by; ``None`` = all devices.
         interval:     Seconds between periodic invocations (timer rule).
                       Mutually exclusive with ``fields``-based triggering.
@@ -96,7 +97,9 @@ class Rule:
             return None
         return self.device_class.__name__.lower()
 
-    async def run(self, event: "RuleEvent", app: "KamioApp", device_instance: Optional["Device"] = None) -> None:
+    async def run(
+        self, event: "RuleEvent", app: "KamioApp", device_instance: Optional["Device"] = None
+    ) -> None:
         """
         Execute the rule function.
 
@@ -112,25 +115,26 @@ class Rule:
         """
         if not self.enabled:
             return
+        import time
+
         try:
-            import inspect
-            
-            # Check if this is a device-level rule (unbound method from device class)
-            # Device-level rules are registered via @rule decorator on device methods
-            # They have _is_rule attribute and belong to a Device subclass
+            # Check if this is a device-level rule (unbound method from device class).
+            # Device-level rules are registered via @rule decorator on device methods.
+            # They have _is_rule attribute and belong to a Device subclass.
+            # We detect this by checking that the function has _is_rule AND its
+            # __qualname__ contains a "." (indicating it's a method, not a plain function).
             is_device_level_rule = (
-                device_instance is not None 
-                and hasattr(self.func, '_is_rule')
-                and hasattr(self.func, '__qualname__')
-                and '.' in self.func.__qualname__
+                device_instance is not None
+                and getattr(self.func, "_is_rule", False)
+                and "." in getattr(self.func, "__qualname__", "")
             )
-            
+
             if is_device_level_rule:
                 # Bind unbound method to device instance for device-level rules
                 func_to_call = self.func.__get__(device_instance, type(device_instance))
                 sig = inspect.signature(func_to_call)
                 param_count = len(sig.parameters)
-            elif hasattr(self.func, '__self__'):
+            elif hasattr(self.func, "__self__"):
                 # Already a bound method
                 func_to_call = self.func
                 sig = inspect.signature(func_to_call)
@@ -140,7 +144,7 @@ class Rule:
                 func_to_call = self.func
                 sig = inspect.signature(func_to_call)
                 param_count = len(sig.parameters)
-            
+
             # Call with appropriate arguments based on parameter count
             if param_count >= 2:
                 await func_to_call(event, app)
@@ -148,7 +152,8 @@ class Rule:
                 await func_to_call(event)
             else:
                 await func_to_call()
-            
+
+            self.last_run = time.time()
             snapshot = dict(event.data)
             await app.hooks.trigger("on_rule_triggered", self, snapshot)
             await app.event_bus.publish("rule_triggered", {"rule": self, "snapshot": snapshot})
@@ -175,9 +180,12 @@ class RuleEngine:
     def __init__(self, app: KamioApp):
         self.app = app
         self.rules: List[Rule] = []
-        self._bg_tasks: List[asyncio.Task] = []
+        self._bg_tasks: set[asyncio.Task] = set()
         self._is_running = False
         self._event_rules_by_type: Dict[Optional[str], List[Rule]] = defaultdict(list)
+        # Lock to protect rules list and index from concurrent modification
+        # (e.g. hot-reload set_rules while handle_device_update is iterating).
+        self._lock = asyncio.Lock()
 
     def add_rule(self, rule: Rule):
         """
@@ -191,9 +199,9 @@ class RuleEngine:
             rule: The Rule instance to register.
         """
         self.rules.append(rule)
-        if not rule.interval:
+        if rule.interval is None:
             self._event_rules_by_type[rule.device_type].append(rule)
-        if self._is_running and rule.interval:
+        if self._is_running and rule.interval is not None:
             self._start_interval_rule(rule)
 
     def remove_rule(self, rule: Rule) -> None:
@@ -207,10 +215,32 @@ class RuleEngine:
             rule.task.cancel()
         if rule in self.rules:
             self.rules.remove(rule)
-        if not rule.interval:
+        if rule.interval is None:
             indexed = self._event_rules_by_type.get(rule.device_type, [])
             if rule in indexed:
                 indexed.remove(rule)
+
+    async def set_rules(self, rules: list) -> None:
+        """Replace the entire rule set atomically and rebuild the index.
+
+        Intended for rollback scenarios (e.g. hot-reload failure).  Interval
+        tasks of removed rules are cancelled and awaited so they can clean
+        up before the new rule set takes effect.  The engine should be
+        stopped before calling this if it is running.
+
+        Acquires the engine lock to prevent ``handle_device_update`` from
+        reading a partially-replaced rule list.
+        """
+        async with self._lock:
+            cancelled = []
+            for rule in list(self.rules):
+                if rule.task and not rule.task.done():
+                    rule.task.cancel()
+                    cancelled.append(rule.task)
+            if cancelled:
+                await asyncio.gather(*cancelled, return_exceptions=True)
+            self.rules[:] = list(rules)
+            self._rebuild_index()
 
     async def start(self):
         """
@@ -221,7 +251,7 @@ class RuleEngine:
         """
         self._is_running = True
         for rule in self.rules:
-            if rule.interval:
+            if rule.interval is not None:
                 self._start_interval_rule(rule)
 
     async def stop(self):
@@ -272,7 +302,8 @@ class RuleEngine:
                     logger.error(f"Error in interval rule '{rule.description}': {e}")
 
         task = asyncio.create_task(_loop())
-        self._bg_tasks.append(task)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
         rule.task = task
 
     def _rebuild_index(self) -> None:
@@ -285,7 +316,7 @@ class RuleEngine:
         """
         self._event_rules_by_type.clear()
         for rule in self.rules:
-            if rule.interval:
+            if rule.interval is not None:
                 continue
             self._event_rules_by_type[rule.device_type].append(rule)
 
@@ -310,29 +341,45 @@ class RuleEngine:
             kind="event",
         )
 
-        candidates: List[Rule] = []
-        candidates.extend(self._event_rules_by_type.get(None, []))
-        if device_type:
-            candidates.extend(self._event_rules_by_type.get(device_type, []))
-            if device_instance:
-                for base in type(device_instance).__mro__:
-                    if base is type(device_instance):
-                        continue
-                    base_type = getattr(base, "device_type", lambda: None)()
-                    if base_type:
-                        candidates.extend(self._event_rules_by_type.get(base_type, []))
+        # Snapshot the candidate rules under the lock so that a concurrent
+        # set_rules() does not mutate the list/index while we iterate.
+        async with self._lock:
+            candidates: List[Rule] = []
+            candidates.extend(self._event_rules_by_type.get(None, []))
+            if device_type:
+                candidates.extend(self._event_rules_by_type.get(device_type, []))
+                if device_instance:
+                    for base in type(device_instance).__mro__:
+                        if base is type(device_instance):
+                            continue
+                        base_type = getattr(base, "device_type", lambda: None)()
+                        if base_type:
+                            candidates.extend(self._event_rules_by_type.get(base_type, []))
 
-        seen = set()
-        tasks = []
-        for rule in candidates:
-            if rule in seen:
-                continue
-            seen.add(rule)
-            if not rule.enabled or rule.interval is not None:
-                continue
-            if rule.fields and not any(field in snapshot for field in rule.fields):
-                continue
-            tasks.append(rule.run(wrapped_snapshot, self.app, device_instance))
+            seen = set()
+            scheduled: List[Tuple[Rule, Coroutine[Any, Any, Any]]] = []
+            for rule in candidates:
+                if rule in seen:
+                    continue
+                seen.add(rule)
+                if not rule.enabled or rule.interval is not None:
+                    continue
+                if rule.fields and not any(field in snapshot for field in rule.fields):
+                    continue
+                scheduled.append((rule, rule.run(wrapped_snapshot, self.app, device_instance)))
 
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if scheduled:
+            results = await asyncio.gather(*(coro for _, coro in scheduled), return_exceptions=True)
+            # return_exceptions=True keeps one failing rule from aborting the
+            # whole batch (important under load), but silently swallowing the
+            # errors makes failing rules invisible.  Log each exception so the
+            # operator can see which rule misbehaved.
+            for rule_item, result in zip(scheduled, results):
+                rule_obj, _ = rule_item
+                if isinstance(result, BaseException) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    logger.error(
+                        f"Rule '{getattr(rule_obj.func, '__name__', rule_obj)}' raised: {result}",
+                        exc_info=result,
+                    )

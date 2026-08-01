@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+
 from kamio import KamioApp
 from kamio.core.custom_nodes import CustomNode
 
@@ -62,6 +63,41 @@ async def test_custom_node_subscribe_and_publish(mock_mqtt_client):
     assert node.received == [("bridge/cmd/power", b"on")]
     assert mock_mqtt_client.publish.called
     app.unregister_custom_node("bridge")
+
+
+@pytest.mark.asyncio
+async def test_unregister_running_node_cleans_subscriptions(mock_mqtt_client):
+    """Unregistering a running node should schedule stop() to clean up subs."""
+    app = KamioApp()
+    node = BridgeNode(mock_mqtt_client, "bridge")
+    app.register_custom_node("bridge", node)
+    await node.start()
+    node._is_running = True
+    # Unregister while running — stop() should be scheduled on the loop.
+    app.unregister_custom_node("bridge")
+    assert app.get_custom_node("bridge") is None
+    # Allow the scheduled stop() task to run.
+    import asyncio
+
+    await asyncio.sleep(0.01)
+    # The default stop() in BridgeNode is a no-op pass, but the node should
+    # no longer be registered.
+    assert "bridge" not in app.list_custom_nodes()
+
+
+@pytest.mark.asyncio
+async def test_unregister_running_node_no_loop_fallback(mock_mqtt_client):
+    """When no event loop is available, unregister does sync cleanup."""
+    app = KamioApp()
+    node = BridgeNode(mock_mqtt_client, "bridge")
+    app.register_custom_node("bridge", node)
+    await node.start()
+    node._is_running = True
+    # Simulate no loop available by setting _loop to None on the app.
+    app._loop = None  # type: ignore[attr-defined]
+    app.unregister_custom_node("bridge")
+    assert app.get_custom_node("bridge") is None
+    assert not node._is_running
 
 
 @pytest.mark.asyncio

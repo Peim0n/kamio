@@ -1,7 +1,8 @@
 from __future__ import annotations
+
 import asyncio
 import logging
-from typing import Any, Callable, List, Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Type
 
 from kamio.core.rules import Rule
 from kamio.device import Device
@@ -25,7 +26,19 @@ class RuleRegistryMixin:
         run_on_start: bool = False,
         description: Optional[str] = None,
     ):
-        """Decorator to register an automation rule."""
+        """Decorator to register an automation rule.
+
+        Args:
+            device: Optional device class whose state changes trigger the rule.
+            interval: Optional polling interval in seconds.
+            fields: Optional list of device field names to watch.
+            enabled: Whether the rule is enabled (default ``True``).
+            run_on_start: Whether to run the rule once on app start (default ``False``).
+            description: Optional human-readable description.
+
+        Returns:
+            A decorator that registers the decorated function as a rule.
+        """
 
         def decorator(func: Callable):
             rule_func: Any = func
@@ -61,7 +74,20 @@ class RuleRegistryMixin:
         run_on_start: bool = False,
         description: Optional[str] = None,
     ) -> Callable:
-        """Register a rule function."""
+        """Register a rule function.
+
+        Args:
+            func: The async callable implementing the rule.
+            device: Optional device class whose state changes trigger the rule.
+            interval: Optional polling interval in seconds.
+            fields: Optional list of device field names to watch.
+            enabled: Whether the rule is enabled (default ``True``).
+            run_on_start: Whether to run the rule once on app start (default ``False``).
+            description: Optional human-readable description.
+
+        Returns:
+            The registered function.
+        """
         if not callable(func):
             raise TypeError(
                 f"add_rule: 'func' must be a callable, got {type(func).__name__!r}.\n"
@@ -101,7 +127,14 @@ class RuleRegistryMixin:
         return func
 
     async def remove_rule(self: Any, func: Callable) -> None:
-        """Remove a registered rule by its function reference."""
+        """Remove a registered rule by its function reference.
+
+        Args:
+            func: The callable previously registered as a rule.
+
+        Returns:
+            None
+        """
         target = None
         for rule_obj in list(self.rules.rules):
             if rule_obj.func is func:

@@ -3,17 +3,36 @@ from __future__ import annotations
 import dataclasses
 import logging
 from typing import Any, Dict, Optional, get_type_hints
+
 from kamio.data_fields import Field
 
 logger = logging.getLogger("Kamio.device_meta")
 
 
 def _merge_from_bases(bases: tuple, attr: str, own: dict) -> dict:
-    """Collect `attr` from all base classes (MRO order) then overlay `own` entries."""
+    """Collect `attr` from all base classes (MRO order) then overlay `own` entries.
+
+    Emits a warning when a child class shadows a parent's entry with the same
+    name but a different type/value, so accidental overrides (e.g. changing
+    ``power: bool`` to ``power: int``) are surfaced instead of silently applied.
+    """
     result: dict = {}
     for base in bases:
         result.update(getattr(base, attr, {}))
-    result.update(own)
+    for key, value in own.items():
+        if key in result:
+            prev = result[key]
+            # Compare by type for Field instances, by identity otherwise.
+            if isinstance(prev, Field) and isinstance(value, Field):
+                changed = prev.python_type != value.python_type or prev.kind != value.kind
+            else:
+                changed = prev is not value
+            if changed:
+                logger.warning(
+                    f"Device field/command '{key}' in {attr} is overridden by a subclass "
+                    f"(was {prev!r}, now {value!r}). This may break compatibility."
+                )
+        result[key] = value
     return result
 
 
@@ -37,6 +56,7 @@ class DeviceMeta(type):
         namespace: dict[str, Any],
         **kwargs: Any,
     ) -> DeviceMeta:
+        """Create a Device subclass, collecting field descriptors and command/event methods."""
 
         annotations: dict[str, Any] = namespace.get("__annotations__", {})
 
@@ -92,7 +112,11 @@ class DeviceMeta(type):
         try:
             # We use get_type_hints to resolve string forward references
             resolved: dict[str, Any] = get_type_hints(cls)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"Could not resolve type hints for {name!r}: {e}. "
+                f"Falling back to raw annotations."
+            )
             resolved = annotations
 
         # Process and type fields

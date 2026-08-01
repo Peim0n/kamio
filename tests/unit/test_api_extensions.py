@@ -6,13 +6,13 @@ import os
 from typing import Any
 
 import pytest
+
 from kamio import Device, KamioApp, command, config, event, state, telemetry
 from kamio.core.automation import EventBus, HooksManager
-from kamio.core.rules import RuleEvent
 from kamio.core.custom_nodes import CustomNode
+from kamio.core.rules import RuleEvent
 from kamio.core.transport import Envelope, EnvelopeType
 from kamio.plugins.builtin import LoggingPlugin, MetricsPlugin
-
 
 # ---------------------------------------------------------------------------
 # EventBus
@@ -404,9 +404,9 @@ async def test_metrics_plugin_loads_and_exposes_metrics():
     assert metrics is not None
     assert callable(getattr(metrics, "get_metrics", None))
 
-    before = metrics.get_metrics()
+    before = await metrics.get_metrics()
     await app.publish_event("test_metric_event", {"x": 1})
-    after = metrics.get_metrics()
+    after = await metrics.get_metrics()
 
     # The plugin is documented as an in-memory event counter.
     assert isinstance(after, dict)

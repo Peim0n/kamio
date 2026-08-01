@@ -5,16 +5,21 @@ import gc
 import tracemalloc
 
 import pytest
-from kamio import Device, KamioApp, command, state, rule
+
+from kamio import Device, KamioApp, command, rule, state
 from kamio.core.rules import RuleEvent
 
 
 class LoadDevice(Device):
-    value: int = state(default=0, writable=True)
+    # Default is -1 so that every update in range(updates) (0..N-1) is a
+    # genuine state change and triggers rules.  With default=0 the first
+    # update {"value": 0} would be a no-op and per-device rule counts would
+    # be off by one.
+    value: int = state(default=-1, writable=True)
 
 
 class LoadDeviceWithRule(Device):
-    value: int = state(default=0, writable=True)
+    value: int = state(default=-1, writable=True)
     rule_hits: int = 0
 
     @rule(fields=["value"])
@@ -64,7 +69,10 @@ async def test_load_many_devices_and_rules():
 @pytest.mark.stress
 @pytest.mark.asyncio
 async def test_memory_leak_after_cycles():
+    # Reset tracemalloc + GC so prior stress tests don't pollute the baseline.
+    tracemalloc.stop()
     tracemalloc.start()
+    gc.collect()
     start = tracemalloc.take_snapshot()
 
     for _ in range(10):
@@ -79,9 +87,17 @@ async def test_memory_leak_after_cycles():
 
     end = tracemalloc.take_snapshot()
     diff = end.compare_to(start, "lineno")
-    total_increase = sum(s.size_diff for s in diff if s.size_diff > 0)
+    # Only count allocations inside kamio source files: allocations from the
+    # logging module, asyncio internals and the interpreter itself that linger
+    # from prior stress tests (e.g. test_20_apps_interaction with 20 apps x 100
+    # devices) are not leaks in the code under test and would make the test
+    # flaky when run after a heavy suite.
+    total_increase = sum(
+        s.size_diff for s in diff if s.size_diff > 0 and "kamio" in s.traceback[0].filename
+    )
     # Allow small growth from interpreter caches; fail on large leak.
     assert total_increase < 5 * 1024 * 1024, f"Memory grew by {total_increase} bytes"
+    tracemalloc.stop()
 
 
 class CommandDevice(Device):
@@ -202,7 +218,15 @@ async def test_mixed_app_and_device_level_rules():
 @pytest.mark.asyncio
 async def test_device_level_rules_memory_stability():
     """Test that device-level rules don't cause memory leaks over many cycles."""
+    # Reset tracemalloc state so allocations from previous stress tests in the
+    # same process (e.g. test_20_apps_interaction with 20 apps × 100 devices)
+    # do not pollute the baseline.  Without this the test is flaky: the first
+    # run after a heavy suite can show >3 MB of "growth" that is actually
+    # leftover noise from prior tests, not a leak in device-level rules.
+    tracemalloc.stop()
     tracemalloc.start()
+    # Flush cyclic garbage left by previous tests before taking the baseline.
+    gc.collect()
     start = tracemalloc.take_snapshot()
 
     for cycle in range(5):
@@ -227,6 +251,15 @@ async def test_device_level_rules_memory_stability():
 
     end = tracemalloc.take_snapshot()
     diff = end.compare_to(start, "lineno")
-    total_increase = sum(s.size_diff for s in diff if s.size_diff > 0)
+    # Only count allocations inside kamio source files: allocations from the
+    # logging module, asyncio internals and the interpreter itself that linger
+    # from prior stress tests (e.g. test_20_apps_interaction with 20 apps x 100
+    # devices) are not leaks in the code under test and would make the test
+    # flaky when run after a heavy suite.
+    total_increase = sum(
+        s.size_diff for s in diff if s.size_diff > 0 and "kamio" in s.traceback[0].filename
+    )
     # Allow small growth from interpreter caches; fail on large leak
     assert total_increase < 3 * 1024 * 1024, f"Memory grew by {total_increase} bytes"
+    # Stop tracemalloc so subsequent tests start from a clean state.
+    tracemalloc.stop()

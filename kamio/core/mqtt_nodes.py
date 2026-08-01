@@ -1,14 +1,15 @@
 from __future__ import annotations
+
 import asyncio
 import logging
-from typing import Any, Callable, Dict, Optional, Coroutine, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, Optional
 
 from . import topics
-from .envelope import Envelope, EnvelopeType, SERVER_ID
+from .envelope import SERVER_ID, Envelope, EnvelopeType
 
 if TYPE_CHECKING:
-    from .state import StateManager
     from .correlation import CommandManager
+    from .state import StateManager
 
 logger = logging.getLogger("Kamio.nodes")
 
@@ -19,6 +20,12 @@ class BaseNode:
     """Base node with lifecycle support."""
 
     def __init__(self, device_id: str, mqtt_client: Any):
+        """Initialize the base node.
+
+        Args:
+            device_id: Unique identifier for this node's device.
+            mqtt_client: gmqtt.Client instance used for MQTT communication.
+        """
         self.device_id = str(device_id)
         self.mqtt = mqtt_client
         self._handlers: Dict[EnvelopeType, Callable[[Envelope], Coroutine[Any, Any, None]]] = {}
@@ -26,14 +33,11 @@ class BaseNode:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._is_running = False
 
-
     async def start(self):
         """Subscribe to MQTT topics and mark node as running.
 
-        Subscribes to ``Kamio/v1/{device_id}/#`` and the broadcast wildcard.
-        The legacy ``Kamio/{device_id}/{type}`` format is parsed by
-        :func:`topics.parse` if a message is received, but the node only
-        subscribes to the current versioned format.
+        Subscribes to ``Kamio/v1/{device_id}/#`` and the broadcast wildcard
+        ``Kamio/v1/all/#``.
         """
         if self._is_running:
             return
@@ -61,9 +65,13 @@ class BaseNode:
         """Graceful shutdown: unsubscribe and stop."""
         if not self._is_running:
             return
+        cancelled = []
         for task in list(self._tasks):
             if not task.done():
                 task.cancel()
+                cancelled.append(task)
+        if cancelled:
+            await asyncio.gather(*cancelled, return_exceptions=True)
         self._tasks.clear()
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
@@ -80,13 +88,42 @@ class BaseNode:
         self._is_running = False
         logger.info(f"Node {self.device_id} stopped")
 
+    async def _resubscribe(self) -> None:
+        """Re-subscribe to topics after a broker reconnect.
+
+        Unlike ``start()`` this does **not** call device lifecycle hooks
+        (``on_start``); it only restores MQTT subscriptions and marks the
+        node as running.
+        """
+        self._loop = asyncio.get_running_loop()
+
+        topics_to_sub = [
+            f"{topics.BASE}/{self.device_id}/#",
+            f"{topics.BASE}/{BROADCAST_ID}/#",
+        ]
+
+        node_logger = getattr(self, "logger", logger)
+        for t in topics_to_sub:
+            try:
+                mid = self.mqtt.subscribe(t, qos=1)
+                await self.mqtt._kamio_wait_for_suback(mid)
+                node_logger.debug(f"Re-subscribed to: {t}")
+            except Exception as e:
+                node_logger.error(f"Failed to re-subscribe to {t}: {e}")
+
+        self._is_running = True
+        logger.info(f"Node {self.device_id} re-subscribed after reconnect")
+
     @property
     def is_running(self) -> bool:
         return self._is_running
 
     def dispatch(self, topic: str, payload: bytes) -> None:
         """Public entry point for routing an MQTT message to this node."""
-        if not self._is_running or not self._loop:
+        # Snapshot the running state and loop reference to avoid a race where
+        # the node is stopped between the check and create_task.
+        loop = self._loop
+        if not self._is_running or loop is None:
             return
 
         dev_id, msg_type = topics.parse(topic)
@@ -98,11 +135,13 @@ class BaseNode:
         node_logger.info(f"Message received for {self.device_id}: {topic}, type={msg_type}")
 
         try:
-            task = self._loop.create_task(self._handle_message(payload))
+            task = loop.create_task(self._handle_message(payload))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
-        except RuntimeError:
-            pass  # event loop closed during shutdown
+        except RuntimeError as e:
+            # Event loop closed during shutdown — log at debug level so the
+            # message loss is traceable without spamming during normal stops.
+            node_logger.debug(f"Could not dispatch message on {self.device_id}: {e}")
 
     async def _handle_message(self, payload: bytes):
         """Asynchronous processing of incoming message."""
@@ -161,11 +200,20 @@ class ServerNode(BaseNode):
         command_manager: Optional[CommandManager] = None,
         device_id: Optional[str] = None,
     ):
+        """Initialize the server node.
+
+        Args:
+            mqtt_client: gmqtt.Client instance used for MQTT communication.
+            state_manager: Optional StateManager for state synchronization.
+            command_manager: Optional CommandManager for RPC command tracking.
+            device_id: Optional device id; defaults to the server id.
+        """
         super().__init__(device_id or SERVER_ID, mqtt_client)
         self.state_manager = state_manager
         self.command_manager = command_manager
 
     async def _handle_message(self, payload: bytes):
+        """Route server-side messages to state or command managers."""
         env = Envelope.from_json(payload)
         if not env:
             return
@@ -222,6 +270,12 @@ class DeviceNode(BaseNode):
     """Thin transport node for a device."""
 
     def __init__(self, device_id: str, mqtt_client: Any):
+        """Initialize the device node.
+
+        Args:
+            device_id: Unique identifier for this device.
+            mqtt_client: gmqtt.Client instance used for MQTT communication.
+        """
         super().__init__(device_id, mqtt_client)
         self._handler: Optional[Callable[[Envelope], Coroutine[Any, Any, None]]] = None
 

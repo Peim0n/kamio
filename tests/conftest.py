@@ -18,7 +18,9 @@ class MockGmqttClient(gmqtt.Client):
     def is_connected(self):
         return self._connected_flag
 
-    async def connect(self, host=None, port=1883, ssl=False, keepalive=60, version=5, raise_exc=True):
+    async def connect(
+        self, host=None, port=1883, ssl=False, keepalive=60, version=5, raise_exc=True
+    ):
         self._connected_flag = True
         if self.on_connect:
             self.on_connect(self, 0, 0, {})

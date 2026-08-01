@@ -1,7 +1,8 @@
 from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 if TYPE_CHECKING:
     from kamio.app import KamioApp
@@ -21,6 +22,7 @@ class Plugin(ABC):
     """
 
     def __init__(self) -> None:
+        """Initialize the plugin with default empty config."""
         self._config: Dict[str, Any] = {}
         self.logger = logging.getLogger(f"Kamio.plugin.{self.name}")
 
@@ -52,27 +54,27 @@ class Plugin(ABC):
     async def on_load(self, app: "KamioApp", context: Optional["PluginContext"] = None) -> None:
         """Called when the plugin is loaded. Override to set up resources.
 
-        The optional ``context`` argument provides a scoped registration API
-        for events, hooks, rules, and background tasks.  Plugins that only
-        accept ``app`` continue to work via backward-compatible introspection.
+        The ``context`` argument provides a scoped registration API
+        for events, hooks, rules, and background tasks.
         """
 
     async def on_unload(self, app: "KamioApp") -> None:
         """Called when the plugin is unloaded. Override to clean up resources."""
 
-    def subscribe_events(self, event_bus: Any) -> None:
+    def subscribe_events(self, context: "PluginContext") -> None:
         """Subscribe to EventBus events. Called automatically after on_load.
 
-        The ``event_bus`` argument is usually a :class:`PluginContext` duck-typed
-        to expose ``subscribe``/``unsubscribe``.
+        The ``context`` argument is a :class:`PluginContext` that exposes
+        ``subscribe``/``unsubscribe`` for scoped event registration.
         """
 
-    def register_hooks(self, hooks: Any) -> None:
+    def register_hooks(self, context: "PluginContext") -> None:
         """Register HooksManager hooks. Called automatically after on_load.
 
-        The ``hooks`` argument is usually a :class:`PluginContext` duck-typed to
-        expose ``register_hook``/``unregister_hook``.
+        The ``context`` argument is a :class:`PluginContext` that exposes
+        ``register_hook``/``unregister_hook`` for scoped hook registration.
         """
 
     def __repr__(self) -> str:
+        """Return a developer-friendly representation showing plugin name and version."""
         return f"<Plugin name={self.name!r} version={self.version!r}>"

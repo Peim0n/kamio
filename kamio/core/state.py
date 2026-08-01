@@ -1,10 +1,14 @@
 from __future__ import annotations
+
 import logging
-from typing import Any, Dict, Optional, Callable, Coroutine
-from .envelope import Envelope, EnvelopeType
+import threading
+from typing import Any, Callable, Coroutine, Dict, Optional
+
 from .correlation import BaseCorrelationManager
+from .envelope import Envelope, EnvelopeType
 
 logger = logging.getLogger("Kamio.state")
+
 
 class StateManager(BaseCorrelationManager):
     """
@@ -15,12 +19,24 @@ class StateManager(BaseCorrelationManager):
     Extends :class:`BaseCorrelationManager` to resolve state-change
     acknowledgments via correlation IDs.
 
+    All state mutations and reads are guarded by an :class:`threading.RLock`
+    so the manager is safe to query from non-event-loop threads (e.g. a
+    metrics/health endpoint) while the event loop updates state from MQTT
+    callbacks.
+
     Args:
         max_pending: Maximum number of pending state-change requests (default 1000).
     """
+
     def __init__(self, max_pending: int = 1000) -> None:
+        """Initialize the state manager.
+
+        Args:
+            max_pending: Maximum number of pending state-change requests.
+        """
         super().__init__(max_pending=max_pending)
         self._states: Dict[str, Dict[str, Any]] = {}
+        self._state_lock = threading.RLock()
 
     def get_state(self, device_id: str, field: Optional[str] = None) -> Any:
         """
@@ -31,14 +47,16 @@ class StateManager(BaseCorrelationManager):
             field: Optional field name; returns that field's value.
                    If ``None``, returns a copy of all fields for the device.
         """
-        device_data = self._states.get(device_id, {})
-        if field:
-            return device_data.get(field)
-        return device_data.copy()
+        with self._state_lock:
+            device_data = self._states.get(device_id, {})
+            if field:
+                return device_data.get(field)
+            return device_data.copy()
 
     def get_all_states(self) -> Dict[str, Dict[str, Any]]:
         """Return a shallow copy of all current device state dictionaries."""
-        return {k: v.copy() for k, v in self._states.items()}
+        with self._state_lock:
+            return {k: v.copy() for k, v in self._states.items()}
 
     def update_state(self, device_id: str, data: Dict[str, Any]) -> None:
         """
@@ -53,9 +71,10 @@ class StateManager(BaseCorrelationManager):
             return
         if not data:
             return
-        if device_id not in self._states:
-            self._states[device_id] = {}
-        self._states[device_id].update(data)
+        with self._state_lock:
+            if device_id not in self._states:
+                self._states[device_id] = {}
+            self._states[device_id].update(data)
 
     async def set_state(
         self,
@@ -63,7 +82,7 @@ class StateManager(BaseCorrelationManager):
         data: Dict[str, Any],
         publish_func: Callable[[Envelope], Coroutine[Any, Any, None]],
         source_id: str,
-        timeout: float = 10.0
+        timeout: float = 10.0,
     ) -> Dict[str, Any]:
         """
         Send a state-change request to a remote device and await its STATE_ACK.
@@ -82,13 +101,10 @@ class StateManager(BaseCorrelationManager):
         env.target = device_id
 
         ack_env = await self._wait_for_ack(
-            target_id=device_id,
-            cind=env.cind,
-            publish_coro=publish_func(env),
-            timeout=timeout
+            target_id=device_id, cind=env.cind, publish_coro=publish_func(env), timeout=timeout
         )
 
-        result = ack_env.data.get("result", {})
+        result: Dict[str, Any] = ack_env.data.get("result", {})
         if ack_env.data.get("status") == "ok":
             self.update_state(device_id, result)
         return result

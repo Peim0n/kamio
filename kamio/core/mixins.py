@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 from kamio.data_fields import parse_freq
 
 if TYPE_CHECKING:
-    from .mqtt_nodes import DeviceNode
     from .envelope import Envelope
+    from .mqtt_nodes import DeviceNode
 
 
 class TaskManagerMixin:
     """Mixin for reliable background task management."""
 
     def __init__(self, logger_name: str):
+        """Initialize the task manager with an empty background task set."""
         self._bg_tasks: set[asyncio.Task] = set()
         self.logger = logging.getLogger(logger_name)
 
@@ -48,6 +49,7 @@ class TelemetryMixin(TaskManagerMixin):
     enable_telemetry: bool = True
 
     def __init__(self, logger_name: str):
+        """Initialize telemetry-related attributes."""
         super().__init__(logger_name=logger_name)
         self.node: Optional[DeviceNode] = None
 
@@ -56,7 +58,8 @@ class TelemetryMixin(TaskManagerMixin):
         app = getattr(self, "_app", None)
         config = getattr(app, "config", None) if app else None
         if config is not None:
-            return config.get("telemetry_min_freq", 0.1, cast=float)
+            result: float = config.get("telemetry_min_freq", 0.1, cast=float)
+            return result
         return 0.1
 
     async def start_telemetry(self):
@@ -130,13 +133,20 @@ class TelemetryMixin(TaskManagerMixin):
         """
         Read a single telemetry value from the device driver if available.
 
-        Returns the raw driver value.  Subclasses may override to parse driver
-        response dicts (e.g. ``{"value": ...}``) into the final telemetry value.
+        Drivers return a dict (e.g. ``{"status": "ok", "field": ..., "data": ...}``).
+        This method extracts the ``data`` key from the response.  If the driver
+        returns a plain value (not a dict), it is returned as-is.
+
+        Subclasses may override to apply custom parsing logic.
         """
         driver = getattr(self, "driver", None)
         if driver is None:
             return None
-        return await driver.read(field_name)
+        result = await driver.read(field_name)
+        # Unwrap the standard driver response envelope.
+        if isinstance(result, dict) and "data" in result:
+            return result["data"]
+        return result
 
     async def handle_telemetry_update(self, field_names: list[str]) -> Optional[dict[str, Any]]:
         """Collect current values for the given telemetry fields.
@@ -151,7 +161,8 @@ class TelemetryMixin(TaskManagerMixin):
         data = {}
         for name in field_names:
             val = None
-            if self.driver is not None:
+            driver = getattr(self, "driver", None)
+            if driver is not None:
                 try:
                     val = await self.read_telemetry_value(name)
                 except Exception as e:

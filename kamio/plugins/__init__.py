@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from kamio.plugins.base import Plugin
 from kamio.plugins.loader import PluginContext, PluginLoader
 

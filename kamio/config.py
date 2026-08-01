@@ -1,7 +1,8 @@
 from __future__ import annotations
-import os
+
 import json
 import logging
+import os
 from dataclasses import dataclass, fields
 from typing import Any, Callable, Dict, Optional
 
@@ -45,6 +46,15 @@ class Config:
                 )
             else:
                 try:
+                    # Limit the file size to prevent a malicious or corrupted
+                    # config from exhausting memory.  1 MB is generous for a
+                    # JSON config file.
+                    file_size = os.path.getsize(config_path)
+                    if file_size > 1 * 1024 * 1024:
+                        raise ValueError(
+                            f"Config file '{config_path}' is too large ({file_size} bytes). "
+                            f"Maximum allowed size is 1 MB."
+                        )
                     with open(config_path, "r", encoding="utf-8") as f:
                         raw = json.load(f)
                     if not isinstance(raw, dict):
@@ -116,11 +126,6 @@ class Config:
             value = getattr(self._settings, key)
         else:
             value = self._get_nested(self._extra, key)
-            if value is None and "." not in key:
-                # Fall back to environment for keys not present anywhere else.
-                env_key = f"Kamio_{key.upper()}"
-                # Case-insensitive lookup for Windows compatibility
-                value = next((v for k, v in os.environ.items() if k.upper() == env_key.upper()), None)
             if value is None:
                 value = default
 
@@ -166,13 +171,20 @@ class Config:
         current[parts[-1]] = value
 
     def _overlay_env(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Overlay Kamio_* environment variables onto the configuration."""
+        """Overlay Kamio_* environment variables onto the configuration.
+
+        Matching is case-insensitive on the prefix (so ``KAMIO_``, ``kamio_``
+        and ``Kamio_`` all work, important on Windows), but the prefix is
+        stripped by length so the remaining key keeps its original casing
+        before being lowercased into a config key.
+        """
         result: Dict[str, Any] = dict(data)
         prefix = "Kamio_"
-        for env_key, env_value in os.environ.items():
-            # Case-insensitive prefix matching for Windows compatibility
-            if not env_key.upper().startswith(prefix.upper()):
+        prefix_upper = prefix.upper()
+        for env_key, env_value in list(os.environ.items()):
+            if not env_key.upper().startswith(prefix_upper):
                 continue
+            # Strip the prefix by length (case-insensitive match already done).
             relative = env_key[len(prefix) :]
             if "__" in relative:
                 # Nested key: Kamio_MQTT__TLS__CAFILE -> mqtt.tls.cafile
@@ -201,4 +213,5 @@ class Config:
         return Settings(mqtt_broker=broker, log_level=level)
 
     def __repr__(self) -> str:
+        """Return a developer-friendly representation of the config."""
         return f"<Config broker={self.mqtt_broker!r} log_level={self._settings.log_level!r}>"

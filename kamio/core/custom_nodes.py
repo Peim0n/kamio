@@ -1,10 +1,11 @@
 from __future__ import annotations
+
 import asyncio
 import inspect
 import logging
 from abc import ABC, abstractmethod
 from fnmatch import fnmatch
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from kamio.app import KamioApp
@@ -29,6 +30,12 @@ class CustomNode(ABC):
     """
 
     def __init__(self, mqtt_client, topic_prefix: str) -> None:
+        """Initialize the custom node.
+
+        Args:
+            mqtt_client: gmqtt.Client instance used for MQTT communication.
+            topic_prefix: Topic prefix all subscriptions and publishes are rooted under.
+        """
         self.mqtt_client = mqtt_client
         self.topic_prefix = topic_prefix.rstrip("/")
         self._subscriptions: List[str] = []
@@ -43,15 +50,22 @@ class CustomNode(ABC):
     async def start(self) -> None:
         """Called when the node is started. Subscribe to topics here."""
 
-    @abstractmethod
     async def stop(self) -> None:
-        """Called when the node is stopped. Clean up resources here."""
+        """Called when the node is stopped.
+
+        Default implementation unsubscribes from every topic the node
+        registered via :meth:`subscribe` / :meth:`subscribe_absolute`.
+        Subclasses that override this **should** call ``await super().stop()``
+        so subscriptions are cleaned up; otherwise the unsubscribe logic
+        below is skipped.
+        """
         for topic in self._subscriptions:
             try:
                 self.mqtt_client.unsubscribe(topic)
             except Exception as e:
                 self.logger.warning(f"Failed to unsubscribe from {topic}: {e}")
         self._subscriptions.clear()
+        self._is_running = False
 
     @abstractmethod
     async def handle_message(self, topic: str, payload: bytes) -> None:
@@ -150,6 +164,7 @@ class CustomNode(ABC):
         return topic == self.topic_prefix or topic.startswith(self.topic_prefix + "/")
 
     def __repr__(self) -> str:
+        """Return a developer-friendly representation."""
         return (
             f"<{self.__class__.__name__} prefix={self.topic_prefix!r} running={self._is_running}>"
         )
@@ -164,8 +179,11 @@ class CustomNodeManager:
     """
 
     def __init__(self, app: "KamioApp") -> None:
+        """Initialize the custom node manager with an app reference."""
         self._app = app
         self._nodes: Dict[str, CustomNode] = {}
+        # Track fire-and-forget stop() tasks from unregister_node.
+        self._stop_tasks: set = set()
 
     # ------------------------------------------------------------------
     # Registration
@@ -190,12 +208,35 @@ class CustomNodeManager:
     def unregister_node(self, name: str) -> None:
         """
         Unregister a node by name.
-        Safe if the node is not found (logs a warning).
+
+        If the node is running, ``node.stop()`` is scheduled via the app's
+        event loop so that MQTT subscriptions are cleaned up.  Safe if the
+        node is not found (logs a warning).
         """
         if name not in self._nodes:
             logger.warning(f"unregister_node: '{name}' not found")
             return
-        del self._nodes[name]
+        node = self._nodes.pop(name)
+        # Clean up the node's MQTT subscriptions.  stop() is async, so
+        # schedule it on the app's event loop if one is available; fall back
+        # to a synchronous best-effort unsubscribe otherwise.
+        if node._is_running:
+            loop = getattr(self._app, "_loop", None)
+            if loop is not None and not loop.is_closed():
+                task = loop.create_task(node.stop())
+                # Track the task so errors are logged and it isn't GC'd early.
+                self._stop_tasks.add(task)
+                task.add_done_callback(self._stop_tasks.discard)
+            else:
+                # No running loop — do a synchronous best-effort cleanup of
+                # subscriptions so they don't leak past the node's lifetime.
+                for topic in node._subscriptions:
+                    try:
+                        node.mqtt_client.unsubscribe(topic)
+                    except Exception:
+                        pass
+                node._subscriptions.clear()
+                node._is_running = False
         logger.info(f"Unregistered custom node: '{name}'")
 
     def get_node(self, name: str) -> Optional[CustomNode]:

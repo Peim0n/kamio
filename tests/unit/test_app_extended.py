@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from kamio import Device, KamioApp, command, config, event, state, telemetry
-from kamio.core.rules import RuleEvent
 from kamio.core.custom_nodes import CustomNode
+from kamio.core.rules import RuleEvent
 from kamio.core.transport import parse
 
 
@@ -209,6 +209,6 @@ async def test_custom_node_publish_async():
     assert client.publish.called
 
 
-def test_topic_parse_understands_current_and_legacy_format():
+def test_topic_parse_understands_current_format():
     assert parse("Kamio/v1/myid/ds") == ("myid", "ds")
-    assert parse("Kamio/myid/dt") == ("myid", "dt")
+    assert parse("Kamio/v1/myid/dt") == ("myid", "dt")

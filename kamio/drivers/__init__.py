@@ -1,12 +1,13 @@
 from __future__ import annotations
+
 from .base import BaseDriver
-from .mock import MockHardwareDriver
 from .gpio import GPIOChipDriver
-from .telnet import TelnetDriver
-from .serial import SerialDriver
 from .http import HTTPDeviceDriver
-from .udp import UDPDriver
+from .mock import MockHardwareDriver
 from .modbus import ModbusTCPDriver
+from .serial import SerialDriver
+from .telnet import TelnetDriver
+from .udp import UDPDriver
 
 __all__ = [
     "BaseDriver",

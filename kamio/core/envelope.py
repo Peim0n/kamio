@@ -1,11 +1,12 @@
 from __future__ import annotations
+
 import json
-import time
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 logger = logging.getLogger("Kamio.envelope")
 
@@ -13,6 +14,8 @@ SERVER_ID = "0"
 
 
 class EnvelopeType(str, Enum):
+    """MQTT message envelope types."""
+
     DEVICE_TELEMETRY = "dt"
     DEVICE_STATE = "ds"
     STATE_ACK = "sa"
@@ -40,14 +43,17 @@ class Envelope:
 
     @classmethod
     def telemetry(cls, source: str, data: dict) -> Envelope:
+        """Create a DEVICE_TELEMETRY envelope."""
         return cls(source=source, type=EnvelopeType.DEVICE_TELEMETRY, data=data)
 
     @classmethod
     def state(cls, source: str, data: dict) -> Envelope:
+        """Create a DEVICE_STATE envelope."""
         return cls(source=source, type=EnvelopeType.DEVICE_STATE, data=data)
 
     @classmethod
     def state_ack(cls, source: str, target: str, data: dict, cind: str) -> Envelope:
+        """Create a STATE_ACK envelope."""
         return cls(source=source, target=target, type=EnvelopeType.STATE_ACK, data=data, cind=cind)
 
     @classmethod
@@ -58,6 +64,7 @@ class Envelope:
         payload: Optional[dict] = None,
         data: Optional[dict] = None,
     ) -> Envelope:
+        """Create a DEVICE_EVENT envelope with event name and payload."""
         effective_payload = payload if payload is not None else (data if data is not None else {})
         return cls(
             source=source,
@@ -75,6 +82,7 @@ class Envelope:
         cind: Optional[str] = None,
         meta: Optional[dict] = None,
     ) -> Envelope:
+        """Create a SERVER_COMMAND envelope."""
         kwargs: Dict[str, Any] = {
             "source": source,
             "target": target,
@@ -88,15 +96,18 @@ class Envelope:
 
     @classmethod
     def command_ack(cls, source: str, target: str, data: dict, cind: str) -> Envelope:
+        """Create a COMMAND_ACK envelope."""
         return cls(
             source=source, target=target, type=EnvelopeType.COMMAND_ACK, data=data, cind=cind
         )
 
     @classmethod
     def keepalive(cls, source: str) -> Envelope:
+        """Create a KEEPALIVE envelope."""
         return cls(source=source, target=source, type=EnvelopeType.KEEPALIVE, data={})
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize the envelope to a dict."""
         return {
             "source": self.source,
             "target": self.target,
@@ -108,14 +119,16 @@ class Envelope:
         }
 
     def to_json(self) -> str:
+        """Serialize the envelope to a JSON string."""
         try:
             return json.dumps(self.to_dict(), default=str)
-        except Exception as e:
+        except (TypeError, ValueError) as e:
             logger.error(f"Serialization error: {e}")
-            raise ValueError("Failed to serialize Envelope to JSON")
+            raise ValueError(f"Failed to serialize Envelope to JSON: {e}")
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> Optional[Envelope]:
+        """Parse a dict into an Envelope. Returns None on error."""
         try:
             raw_type = d.get("type", "unknown")
             env_type = EnvelopeType(raw_type)
@@ -130,7 +143,7 @@ class Envelope:
                 source=str(d.get("source", "")),
                 target=str(target) if target is not None else None,
                 type=env_type,
-                cind=str(d.get("cind") or uuid.uuid4().hex[:8]),
+                cind=str(d.get("cind") if d.get("cind") is not None else uuid.uuid4().hex[:8]),
                 ts=float(d.get("ts", time.time())),
                 data=raw_data if isinstance(raw_data, dict) else {},
                 meta=raw_meta if isinstance(raw_meta, dict) else {},
@@ -141,12 +154,16 @@ class Envelope:
 
     @classmethod
     def from_json(cls, s: Union[str, bytes]) -> Optional[Envelope]:
+        """Parse a JSON string/bytes into an Envelope. Returns None on error."""
         try:
             if isinstance(s, bytes):
                 s = s.decode("utf-8")
             return cls.from_dict(json.loads(s))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.error(f"JSON/Encoding error: {e}")
+            return None
+        except (TypeError, ValueError, KeyError, AttributeError) as e:
+            logger.error(f"Envelope parsing error: {e}")
             return None
         except Exception as e:
             logger.error(f"Unexpected parsing error: {e}")

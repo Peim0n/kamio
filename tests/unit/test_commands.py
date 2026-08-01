@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from kamio import Device, KamioApp, command, state
 from kamio.drivers.base import BaseDriver
 
@@ -51,7 +52,6 @@ class DriverRelay(BaseDriver):
         if command_name == "driver_toggle":
             return {"driver": True, "command": command_name}
         raise NotImplementedError(command_name)
-
 
 
 @pytest.mark.asyncio

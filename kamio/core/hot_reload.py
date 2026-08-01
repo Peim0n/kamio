@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 import importlib
 import importlib.util
@@ -8,7 +9,7 @@ import logging
 import os
 import sys
 from fnmatch import fnmatch
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from kamio.app import KamioApp
@@ -17,8 +18,8 @@ logger = logging.getLogger("Kamio.hot_reload")
 
 # Optional watchdog support: uses OS-level file system events when available.
 try:
-    from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
 
     _WATCHDOG_AVAILABLE = True
 except Exception:  # pragma: no cover
@@ -33,6 +34,7 @@ class _WatchEntry:
     __slots__ = ("path", "pattern", "handler", "is_dir", "_mtimes")
 
     def __init__(self, path: str, pattern: str, handler: Callable, is_dir: bool) -> None:
+        """Create a watch entry for a path or directory with a glob pattern."""
         self.path = path
         self.pattern = pattern
         self.handler = handler
@@ -40,6 +42,7 @@ class _WatchEntry:
         self._mtimes: Dict[str, float] = self._snapshot()
 
     def _snapshot(self) -> Dict[str, float]:
+        """Take a snapshot of file modification times for tracked paths."""
         result: Dict[str, float] = {}
         try:
             if self.is_dir:
@@ -77,9 +80,11 @@ class _WatchdogHandler:
     """Adapter translating watchdog events into HotReloadManager calls."""
 
     def __init__(self, manager: "HotReloadManager") -> None:
+        """Create a watchdog event handler bound to a callback."""
         self.manager = manager
 
     def dispatch(self, event) -> None:
+        """Forward file system events to the callback."""
         if event.is_directory:
             return
         for entry in self.manager._entries:
@@ -96,9 +101,14 @@ class HotReloadManager:
     avoid duplicate triggers on rapid saves.
     """
 
-    def __init__(
-        self, app: "KamioApp", poll_interval: float = 1.0, debounce: float = 0.3
-    ) -> None:
+    def __init__(self, app: "KamioApp", poll_interval: float = 1.0, debounce: float = 0.3) -> None:
+        """Initialize the hot-reload manager.
+
+        Args:
+            app: The KamioApp instance this manager belongs to.
+            poll_interval: Seconds between polling checks (default 1.0).
+            debounce: Seconds to debounce rapid file changes (default 0.3).
+        """
         self.app = app
         self._poll_interval = poll_interval
         self._debounce = debounce
@@ -108,6 +118,8 @@ class HotReloadManager:
         self._pending: Dict[str, asyncio.TimerHandle] = {}
         self._observer: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # Track fire-and-forget handler tasks so errors are not silently lost.
+        self._handler_tasks: set = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -178,9 +190,17 @@ class HotReloadManager:
                 pass
             finally:
                 self._task = None
+        # Cancel any pending debounced calls.
+        for handle in list(self._pending.values()):
+            handle.cancel()
+        self._pending.clear()
+        # Await any in-flight handler tasks so they don't outlive the manager.
+        if self._handler_tasks:
+            await asyncio.gather(*self._handler_tasks, return_exceptions=True)
+            self._handler_tasks.clear()
         if self._observer is not None:
             self._observer.stop()
-            self._observer.join()
+            await asyncio.to_thread(self._observer.join)
             self._observer = None
         logger.info("HotReloadManager disabled")
 
@@ -245,6 +265,7 @@ class HotReloadManager:
     # ------------------------------------------------------------------
 
     async def _poll_loop(self) -> None:
+        """Main polling loop: check for changes and invoke handlers."""
         while self._enabled:
             await asyncio.sleep(self._poll_interval)
             for entry in self._entries:
@@ -268,21 +289,36 @@ class HotReloadManager:
             self._loop.call_soon_threadsafe(self._schedule_call_in_loop, file_path, handler)
 
     def _schedule_call_in_loop(self, file_path: str, handler: Callable) -> None:
-        """Debounce: cancel any pending call for this path and reschedule."""
+        """Debounce: cancel any pending call for this path and reschedule.
+
+        The ``_pending`` entry is removed inside ``_fire`` only if it still
+        points at the same handle, so a cancelled-then-rescheduled cycle cannot
+        raise ``KeyError`` if the old callback fires between cancel and re-add.
+        """
         key = file_path
-        if key in self._pending:
-            self._pending[key].cancel()
+        existing = self._pending.get(key)
+        if existing is not None:
+            existing.cancel()
 
         if self._loop is None:
             return
 
         def _fire():
-            del self._pending[key]
-            self._loop.create_task(self._invoke_handler(handler, file_path))
+            # Only delete if the pending entry is still *our* handle; otherwise
+            # a newer reschedule has already replaced it.
+            if self._pending.get(key) is handle:
+                self._pending.pop(key, None)
+            task = self._loop.create_task(self._invoke_handler(handler, file_path))
+            # Track the task so errors are not silently lost and the task
+            # does not get garbage-collected before completion.
+            self._handler_tasks.add(task)
+            task.add_done_callback(self._handler_tasks.discard)
 
-        self._pending[key] = self._loop.call_later(self._debounce, _fire)
+        handle = self._loop.call_later(self._debounce, _fire)
+        self._pending[key] = handle
 
     async def _invoke_handler(self, handler: Callable, file_path: str) -> None:
+        """Invoke a handler with the changed file path, catching errors."""
         try:
             if inspect.iscoroutinefunction(handler):
                 await handler(file_path)
@@ -352,8 +388,7 @@ async def reload_rules_from_file(file_path: str, app: "KamioApp") -> bool:
     except Exception as e:
         logger.error(f"[hot-reload] Error reloading rules from '{file_path}': {e}", exc_info=True)
         await app.rules.stop()
-        app.rules.rules[:] = old_rules
-        app.rules._rebuild_index()
+        await app.rules.set_rules(old_rules)
         if app._is_running:
             await app.rules.start()
         await _publish_reload_error(app, file_path, e)
@@ -367,11 +402,22 @@ async def reload_devices_from_file(file_path: str, app: "KamioApp") -> bool:
     Updates DeviceRegistry._classes for each Device subclass found.
     Running instances continue with old class until restart.
 
+    On any error the registry and device-level rules are rolled back to
+    their pre-reload state, mirroring the rollback strategy used by
+    :func:`reload_rules_from_file`.
+
     Returns True on success, False on error.
     """
     from kamio.device import Device
 
     logger.info(f"[hot-reload] Reloading device classes from {file_path}")
+
+    # Snapshot state for rollback.  Classes are replaced in-place by
+    # register_class(), so we keep a copy of the old class mapping plus the
+    # full rule list (device-level rules are added via app.register()).
+    old_classes = dict(app.registry.classes)
+    old_rules = list(app.rules.rules)
+
     try:
         module = _load_module_from_file(file_path)
         found = 0
@@ -379,7 +425,11 @@ async def reload_devices_from_file(file_path: str, app: "KamioApp") -> bool:
             attr = getattr(module, attr_name)
             if isinstance(attr, type) and issubclass(attr, Device) and attr is not Device:
                 type_name = attr.device_type()
-                app.registry.classes[type_name] = attr
+                # Use app.register() so device-level rules are re-registered.
+                app.registry.register_class(attr)
+                # Re-register device-level rules if the class has any.
+                if hasattr(attr, "Kamio_RULES") and attr.Kamio_RULES:
+                    app.register(attr)
                 found += 1
                 logger.info(f"[hot-reload] Updated device class: {type_name}")
 
@@ -394,6 +444,23 @@ async def reload_devices_from_file(file_path: str, app: "KamioApp") -> bool:
 
     except Exception as e:
         logger.error(f"[hot-reload] Error reloading devices from '{file_path}': {e}", exc_info=True)
+        # Rollback: restore the previous class mapping and rule set so the
+        # application is not left with a partially-applied reload.
+        try:
+            await app.rules.stop()
+            # Restore classes: re-register every old class (this overwrites
+            # any half-registered new ones) and drop any new device types
+            # that did not exist before the reload.
+            new_type_names = set(app.registry.classes) - set(old_classes)
+            for cls in old_classes.values():
+                app.registry.register_class(cls)
+            for extra in new_type_names:
+                app.registry.unregister_class(extra)
+            await app.rules.set_rules(old_rules)
+            if app._is_running:
+                await app.rules.start()
+        except Exception as rb_err:
+            logger.error(f"[hot-reload] Rollback failed: {rb_err}", exc_info=True)
         await _publish_reload_error(app, file_path, e)
         return False
 
@@ -442,9 +509,25 @@ async def _publish_reload_error(app: "KamioApp", file_path: str, error: Exceptio
 
 
 def _load_module_from_file(file_path: str):
-    """Import or reimport a module from an absolute file path."""
+    """Import or reimport a module from an absolute file path.
+
+    Uses the file basename (without extension) as the module name, matching
+    standard Python import conventions.  If a different file with the same
+    basename is already in ``sys.modules``, falls back to a path-based name
+    to avoid collisions.
+    """
     abs_path = os.path.abspath(file_path)
     module_name = os.path.splitext(os.path.basename(abs_path))[0]
+
+    # Check for a collision: same basename, different file path.
+    existing_mod = sys.modules.get(module_name)
+    if existing_mod is not None:
+        existing_file = getattr(existing_mod, "__file__", None)
+        if existing_file and os.path.abspath(existing_file) != abs_path:
+            # Collision — use a sanitised full path as the module name.
+            module_name = abs_path.replace(os.sep, ".").replace("/", ".").lstrip(".")
+            if module_name.endswith(".py"):
+                module_name = module_name[:-3]
 
     existing = None
     for name, mod in list(sys.modules.items()):
@@ -476,15 +559,18 @@ def _find_rule_funcs(module) -> List[Tuple[Callable, Dict[str, Any]]]:
 
 
 def _load_config_file(file_path: str) -> Dict[str, Any]:
+    """Load a JSON config file and return the parsed dict."""
     ext = os.path.splitext(file_path)[1].lower()
     with open(file_path, "r", encoding="utf-8") as f:
         if ext in (".yaml", ".yml"):
             try:
                 import yaml
 
-                return yaml.safe_load(f) or {}
+                loaded: Dict[str, Any] = yaml.safe_load(f) or {}
+                return loaded
             except ImportError:
                 raise ImportError(
                     "PyYAML is required to reload .yaml configs. Install it: pip install pyyaml"
                 )
-        return json.load(f)
+        loaded = json.load(f)
+        return loaded

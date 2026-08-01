@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 from typing import Any, Optional
 
@@ -33,9 +34,10 @@ class UDPDriver(BaseDriver):
         self.timeout = timeout
         self.local_port = local_port
         self._transport: Optional[asyncio.DatagramTransport] = None
-        self._protocol: Optional[asyncio.DatagramProtocol] = None
+        self._protocol: Optional[_UDPProtocol] = None
 
     async def connect(self) -> None:
+        """Create a UDP endpoint and store the transport and protocol."""
         loop = asyncio.get_running_loop()
         self._transport, self._protocol = await loop.create_datagram_endpoint(
             lambda: _UDPProtocol(),
@@ -44,6 +46,7 @@ class UDPDriver(BaseDriver):
         self.logger.info(f"UDP bound to port {self.local_port}")
 
     async def disconnect(self) -> None:
+        """Close the UDP transport if open."""
         if self._transport:
             self._transport.close()
             self._transport = None
@@ -65,6 +68,7 @@ class UDPDriver(BaseDriver):
         return {"status": "ok", "sent": len(payload)}
 
     async def read(self, field_name: str, params: Optional[dict] = None) -> Any:
+        """Send a query datagram and await the response."""
         params = params or {}
         payload = self._build_payload(field_name, params)
         if payload:
@@ -103,14 +107,29 @@ class UDPDriver(BaseDriver):
 
 
 class _UDPProtocol(asyncio.DatagramProtocol):
+    """Asyncio datagram protocol with a bounded receive queue.
+
+    Network errors are logged and re-raised into the queue as an exception
+    so that ``recv()`` callers see the real error instead of an empty
+    bytes that silently masks a failure.
+    """
+
     def __init__(self) -> None:
-        self._buffer: asyncio.Queue[bytes] = asyncio.Queue()
+        self._buffer: asyncio.Queue = asyncio.Queue()
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
         self._buffer.put_nowait(data)
 
     def error_received(self, exc: Exception) -> None:
-        self._buffer.put_nowait(b"")
+        import logging
+
+        logging.getLogger("Kamio.drivers.udp").warning(f"UDP protocol error: {exc}")
+        # Put the exception in the queue so recv() callers see it.
+        self._buffer.put_nowait(exc)
 
     async def recv(self, max_bytes: int) -> bytes:
-        return await self._buffer.get()
+        data = await self._buffer.get()
+        if isinstance(data, Exception):
+            raise data
+        result: bytes = data[:max_bytes] if max_bytes > 0 else data
+        return result

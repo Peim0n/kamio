@@ -1,36 +1,37 @@
 from __future__ import annotations
+
 import asyncio
 import logging
+import threading
 from typing import Dict, List, Optional, Union
 
 import gmqtt as mqtt
 
-from kamio.core import (
-    ServerNode,
-    DeviceNode,
-    StateManager,
-    CommandManager,
-    RuleEngine,
-    DeviceRegistry,
-)
-from kamio.core.hooks import HooksManager
-from kamio.core.event_bus import EventBus
-from kamio.plugins.loader import PluginLoader
-from kamio.core.hot_reload import HotReloadManager
-from kamio.core.custom_nodes import CustomNodeManager
-from kamio.core.mqtt_connection import MqttConnection
-from kamio.discovery import HADiscovery
-from kamio.device import Device
-from kamio.config import Config
-
+from kamio.app.mixins.custom_nodes import CustomNodeFacadeMixin
+from kamio.app.mixins.devices import DeviceRegistryMixin
+from kamio.app.mixins.hooks_events import HookEventFacadeMixin
+from kamio.app.mixins.hot_reload import HotReloadFacadeMixin
 from kamio.app.mixins.lifecycle import LifecycleMixin
 from kamio.app.mixins.mqtt import MqttDispatchMixin
-from kamio.app.mixins.hooks_events import HookEventFacadeMixin
 from kamio.app.mixins.plugins import PluginFacadeMixin
-from kamio.app.mixins.hot_reload import HotReloadFacadeMixin
-from kamio.app.mixins.custom_nodes import CustomNodeFacadeMixin
 from kamio.app.mixins.rules import RuleRegistryMixin
-from kamio.app.mixins.devices import DeviceRegistryMixin
+from kamio.config import Config
+from kamio.core import (
+    CommandManager,
+    DeviceNode,
+    DeviceRegistry,
+    RuleEngine,
+    ServerNode,
+    StateManager,
+)
+from kamio.core.custom_nodes import CustomNodeManager
+from kamio.core.event_bus import EventBus
+from kamio.core.hooks import HooksManager
+from kamio.core.hot_reload import HotReloadManager
+from kamio.core.mqtt_connection import MqttConnection
+from kamio.device import Device
+from kamio.discovery import HADiscovery
+from kamio.plugins.loader import PluginLoader
 
 logger = logging.getLogger("Kamio.app")
 
@@ -90,6 +91,7 @@ class KamioApp(
         protocol: int = 5,
         log_level: Optional[int] = None,
         config_path: Optional[str] = None,
+        shutdown_timeout: float = 5.0,
         **kwargs,
     ):
         """
@@ -108,6 +110,7 @@ class KamioApp(
                            from the file (or ``Kamio_*`` env vars) fill in
                            ``mqtt_broker`` and ``log_level`` when not passed
                            explicitly.
+            shutdown_timeout: Maximum time in seconds to wait for graceful shutdown (default 5.0).
             **kwargs:      Extra keyword arguments forwarded to ``MqttConnection``
                            (e.g. ``transport``, ``tls``, ``reconnect_min_delay``,
                            ``reconnect_max_delay``).
@@ -116,12 +119,12 @@ class KamioApp(
         resolved_log_level = log_level if log_level is not None else self.config.log_level
         resolved_broker = mqtt_broker if mqtt_broker is not None else self.config.mqtt_broker
         self._keepalive = keepalive
+        self.shutdown_timeout = shutdown_timeout
 
         if resolved_log_level is not None:
-            logging.basicConfig(
-                level=resolved_log_level,
-                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            )
+            # Configure only the Kamio logger — do not call basicConfig()
+            # which would override the host application's logging setup.
+            logging.getLogger("Kamio").setLevel(resolved_log_level)
 
         self.state = StateManager()
         self.commands = CommandManager()
@@ -138,11 +141,21 @@ class KamioApp(
         if isinstance(resolved_broker, mqtt.Client):
             self.mqtt_client = resolved_broker
             self._mqtt_conn: Optional[MqttConnection] = None
+            if kwargs:
+                raise TypeError(
+                    f"KamioApp() got unexpected keyword argument(s): {sorted(kwargs)!r}. "
+                    f"These are only forwarded to MqttConnection when 'mqtt_broker' is a URI."
+                )
         else:
             transport = kwargs.pop("transport", "tcp")
             reconnect_min_delay = kwargs.pop("reconnect_min_delay", 1.0)
             reconnect_max_delay = kwargs.pop("reconnect_max_delay", 60.0)
             tls = kwargs.pop("tls", None)
+            if kwargs:
+                raise TypeError(
+                    f"KamioApp() got unexpected keyword argument(s): {sorted(kwargs)!r}. "
+                    f"Accepted extras: transport, reconnect_min_delay, reconnect_max_delay, tls."
+                )
             self._mqtt_conn = MqttConnection(
                 broker_uri=resolved_broker,
                 client_id=client_id,
@@ -156,7 +169,11 @@ class KamioApp(
             )
             self.mqtt_client = self._mqtt_conn.client
 
-        server_id = self._mqtt_conn.client_id if self._mqtt_conn else (self.mqtt_client._client_id or b"").decode()
+        if self._mqtt_conn is not None:
+            server_id = self._mqtt_conn.client_id
+        else:
+            raw_id = getattr(self.mqtt_client, "_client_id", "") or ""
+            server_id = raw_id.decode() if isinstance(raw_id, (bytes, bytearray)) else raw_id
         self.server_node = ServerNode(
             mqtt_client=self.mqtt_client,
             state_manager=self.state,
@@ -169,6 +186,7 @@ class KamioApp(
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
 
         self._device_nodes: Dict[str, DeviceNode] = {}
+        self._device_nodes_lock = threading.RLock()
         self._is_running = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -178,11 +196,23 @@ class KamioApp(
         return logger
 
     def enable_ha_discovery(self, prefix: str = "homeassistant") -> None:
-        """Enable Home Assistant MQTT Discovery announcements for new devices."""
-        if self.ha_discovery is None or self.ha_discovery.prefix != prefix:
+        """Enable Home Assistant MQTT Discovery announcements for new devices.
+
+        Also announces all currently registered device instances so that
+        pre-existing devices are discovered by Home Assistant.
+        """
+        if self.ha_discovery is None or self.ha_discovery.discovery_prefix != prefix:
             self.ha_discovery = HADiscovery(discovery_prefix=prefix)
         self._ha_discovery_enabled = True
         logger.info(f"Home Assistant discovery enabled with prefix '{prefix}'")
+
+        # Announce all existing devices that have a running node.
+        for device_id, device in self._device_nodes.items():
+            instance = self.registry.get_instance(device_id)
+            if instance is None:
+                continue
+            # Schedule the announcement on the event loop if running.
+            self._schedule_when_running(self.ha_discovery.announce(instance))
 
     def disable_ha_discovery(self) -> None:
         """Disable Home Assistant MQTT Discovery announcements."""

@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict
+
 
 class BaseDriver(ABC):
     """
     Base driver class for Kamio Core.
     Handles low-level hardware interaction.
     """
+
     def __init__(self):
         self.logger = logging.getLogger(f"Kamio.driver.{self.__class__.__name__}")
 
@@ -32,11 +35,14 @@ class BaseDriver(ABC):
         pass
 
     async def __aenter__(self) -> BaseDriver:
+        """Async context manager entry — calls connect()."""
         await self.connect()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit — calls disconnect()."""
         await self.disconnect()
 
     def __repr__(self) -> str:
+        """Return a developer-friendly representation."""
         return f"<{self.__class__.__name__}>"
