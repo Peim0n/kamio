@@ -1,6 +1,6 @@
 # Kamio v1.0.0b3
 
-![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)
+![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 ![Version](https://img.shields.io/badge/version-1.0.0b3--beta-blue.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 ![MQTT](https://img.shields.io/badge/MQTT-v5-orange.svg)
@@ -30,7 +30,7 @@ pip install kamio
 
 ### Requirements
 
-- Python 3.9+
+- Python 3.10+
 - MQTT broker (Mosquitto recommended)
 
 ```bash
