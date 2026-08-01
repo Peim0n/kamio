@@ -12,12 +12,11 @@ authors = [
     {name = "Данил Сытников", email = "d.sytnikov@int-sys.ru"},
 ]
 keywords = ["iot", "mqtt", "home-automation", "asyncio", "framework", "smart-home"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
