@@ -206,6 +206,34 @@ class TestTelnetDriver:
         assert result == {"status": "ok", "field": "field", "response": ""}
 
     @pytest.mark.asyncio
+    async def test_read_write_failure_then_reconnect(self):
+        """read() shares execute()'s write-retry behaviour."""
+        drv = TelnetDriver("10.0.0.1")
+        reader = MagicMock()
+        reader.readline = AsyncMock(return_value=b"42\n")
+        writer = MagicMock()
+        writer.drain = AsyncMock(side_effect=[ConnectionError("broken"), None])
+        drv.reader, drv.writer = reader, writer
+        with patch.object(drv, "_ensure_connected", new=AsyncMock()):
+            result = await drv.read("temperature", {"command": "GET TEMP"})
+        assert writer.write.call_count == 2
+        assert result["response"] == "42"
+
+    @pytest.mark.asyncio
+    async def test_read_no_response(self):
+        drv = TelnetDriver("10.0.0.1")
+        reader = MagicMock()
+        reader.readline = AsyncMock(return_value=b"should not be called\n")
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        drv.reader, drv.writer = reader, writer
+        with patch.object(drv, "_ensure_connected", new=AsyncMock()):
+            result = await drv.read("field", {"wait_response": False})
+        writer.write.assert_called_once_with(b"field\n")
+        reader.readline.assert_not_called()
+        assert result == {"status": "ok", "field": "field", "response": ""}
+
+    @pytest.mark.asyncio
     async def test_ensure_connected_already_connected(self):
         drv = TelnetDriver("10.0.0.1")
         writer = MagicMock()

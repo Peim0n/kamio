@@ -65,6 +65,30 @@ async def test_serial_read_without_response():
 
 
 @pytest.mark.asyncio
+async def test_serial_read_empty_command_skips_write():
+    driver = SerialDriver(port="/dev/null")
+    fake_ser = MagicMock()
+    fake_ser.read.return_value = b"data\n"
+    driver.ser = fake_ser
+
+    result = await driver.read("temp", {"command": "", "value": 1})
+    fake_ser.write.assert_not_called()
+    assert result["response"] == "data"
+
+
+@pytest.mark.asyncio
+async def test_serial_execute_with_value():
+    driver = SerialDriver(port="/dev/null")
+    fake_ser = MagicMock()
+    fake_ser.read.return_value = b"OK\n"
+    driver.ser = fake_ser
+
+    result = await driver.execute("send", {"command": "SET", "value": 42})
+    fake_ser.write.assert_called_once_with(b"SET 42")
+    assert result == {"status": "ok", "command": "send", "response": "OK"}
+
+
+@pytest.mark.asyncio
 async def test_serial_read_raises_when_not_connected():
     driver = SerialDriver(port="/dev/null")
     with pytest.raises(RuntimeError):

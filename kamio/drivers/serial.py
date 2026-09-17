@@ -91,56 +91,44 @@ class SerialDriver(BaseDriver):
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Send a query command and read the response from the serial port."""
-        if not self.ser:
-            raise RuntimeError("Serial port not connected")
-
         params = params or {}
-        data = params.get("command", field_name)
-        value = params.get("value")
-        if data and value is not None:
-            data = f"{data} {value}"
-        if data and isinstance(data, str):
-            data = data.encode()
-
-        async with self._lock:
-
-            def _write_read():
-                if data:
-                    self.ser.write(data)
-                if params.get("wait_response", True):
-                    return (
-                        _readline_bounded(self.ser, self.read_limit)
-                        .decode(errors="replace")
-                        .strip()
-                    )
-                return ""
-
-            response = await asyncio.to_thread(_write_read)
+        response = await self._transact(self._build_payload(field_name, params), params)
         return {"status": "ok", "field": field_name, "response": response}
 
     async def execute(self, command_name: str, params: dict) -> dict:
         """Send a command to the serial device and optionally read a response."""
-        if not self.ser:
-            raise RuntimeError("Serial port not connected")
+        params = params or {}
+        response = await self._transact(self._build_payload(command_name, params), params)
+        return {"status": "ok", "command": command_name, "response": response}
 
-        data = params.get("command", command_name)
+    @staticmethod
+    def _build_payload(name: str, params: Dict[str, Any]) -> bytes:
+        """Resolve ``params["command"]`` (default ``name``) plus optional ``value`` to bytes.
+
+        An empty command yields ``b""`` and is never written, so callers can
+        perform a pure read by passing ``{"command": ""}``.
+        """
+        data = params.get("command", name)
+        if not data:
+            return b""
         value = params.get("value")
         if value is not None:
             data = f"{data} {value}"
-        if isinstance(data, str):
-            data = data.encode()
+        return data.encode() if isinstance(data, str) else data
+
+    async def _transact(self, payload: bytes, params: Dict[str, Any]) -> str:
+        """Write ``payload`` (if non-empty) and optionally read one bounded line."""
+        ser = self.ser
+        if not ser:
+            raise RuntimeError("Serial port not connected")
+        wait_response = params.get("wait_response", True)
+
+        def _write_read() -> str:
+            if payload:
+                ser.write(payload)
+            if wait_response:
+                return _readline_bounded(ser, self.read_limit).decode(errors="replace").strip()
+            return ""
 
         async with self._lock:
-
-            def _write_read():
-                self.ser.write(data)
-                if params.get("wait_response", True):
-                    return (
-                        _readline_bounded(self.ser, self.read_limit)
-                        .decode(errors="replace")
-                        .strip()
-                    )
-                return ""
-
-            response = await asyncio.to_thread(_write_read)
-        return {"status": "ok", "command": command_name, "response": response}
+            return await asyncio.to_thread(_write_read)

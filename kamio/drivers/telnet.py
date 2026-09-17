@@ -65,58 +65,62 @@ class TelnetDriver(BaseDriver):
 
     async def execute(self, command_name: str, params: dict) -> dict:
         """Send a command over Telnet and read the response."""
-        async with self._lock:  # Prevent concurrent commands
-            await self._ensure_connected()
-            assert self.writer is not None and self.reader is not None
-
-            cmd = params.get("command", command_name)
-            value = params.get("value")
-            if value is not None:
-                cmd = f"{cmd} {value}"
-            if not cmd.endswith("\n"):
-                cmd += "\n"
-
-            try:
-                self.writer.write(cmd.encode())
-                await self.writer.drain()
-            except Exception as e:
-                self.logger.warning(f"Telnet write failed, attempting reconnect: {e}")
-                await self._ensure_connected()
-                assert self.writer is not None and self.reader is not None
-                self.writer.write(cmd.encode())
-                await self.writer.drain()
-
-            # Read response if expected
-            response = ""
-            if params.get("wait_response", True):
-                try:
-                    line = await asyncio.wait_for(self.reader.readline(), timeout=self.timeout)
-                    response = line.decode().strip()
-                except asyncio.TimeoutError:
-                    self.logger.warning("Telnet read timeout")
-
-            return {"status": "ok", "command": command_name, "response": response}
+        params = params or {}
+        response = await self._transact(self._build_command(command_name, params), params)
+        return {"status": "ok", "command": command_name, "response": response}
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Send a query command and read the response over Telnet."""
         params = params or {}
+        response = await self._transact(self._build_command(field_name, params), params)
+        return {"status": "ok", "field": field_name, "response": response}
+
+    @staticmethod
+    def _build_command(name: str, params: Dict[str, Any]) -> bytes:
+        """Resolve ``params["command"]`` (default ``name``) plus optional ``value`` to a line.
+
+        An empty command yields ``b""`` and is never written, so callers can
+        perform a pure read by passing ``{"command": ""}``.
+        """
+        cmd = str(params.get("command", name) or "")
+        if not cmd:
+            return b""
+        value = params.get("value")
+        if value is not None:
+            cmd = f"{cmd} {value}"
+        if not cmd.endswith("\n"):
+            cmd += "\n"
+        return cmd.encode()
+
+    async def _transact(self, payload: bytes, params: Dict[str, Any]) -> str:
+        """Under the lock: write ``payload`` (if non-empty) and optionally read one line."""
         async with self._lock:  # Prevent concurrent commands
             await self._ensure_connected()
-            assert self.reader is not None and self.writer is not None
+            if payload:
+                await self._write(payload)
+            if params.get("wait_response", True):
+                return await self._read_line()
+            return ""
 
-            cmd = params.get("command", field_name)
-            if cmd:
-                value = params.get("value")
-                if value is not None:
-                    cmd = f"{cmd} {value}"
-                if not cmd.endswith("\n"):
-                    cmd += "\n"
-                self.writer.write(cmd.encode())
-                await self.writer.drain()
+    async def _write(self, payload: bytes) -> None:
+        """Write ``payload``, reconnecting and retrying once if the write fails."""
+        assert self.writer is not None
+        try:
+            self.writer.write(payload)
+            await self.writer.drain()
+        except Exception as e:
+            self.logger.warning(f"Telnet write failed, attempting reconnect: {e}")
+            await self._ensure_connected()
+            assert self.writer is not None
+            self.writer.write(payload)
+            await self.writer.drain()
 
-            try:
-                line = await asyncio.wait_for(self.reader.readline(), timeout=self.timeout)
-                return {"status": "ok", "field": field_name, "response": line.decode().strip()}
-            except asyncio.TimeoutError:
-                self.logger.warning("Telnet read timeout")
-                return {"status": "ok", "field": field_name, "response": ""}
+    async def _read_line(self) -> str:
+        """Read one line, returning ``""`` on timeout."""
+        assert self.reader is not None
+        try:
+            line = await asyncio.wait_for(self.reader.readline(), timeout=self.timeout)
+            return line.decode().strip()
+        except asyncio.TimeoutError:
+            self.logger.warning("Telnet read timeout")
+            return ""
