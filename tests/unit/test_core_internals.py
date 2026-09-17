@@ -582,6 +582,18 @@ class TestTelemetryMixin:
         env = Envelope.telemetry(source="d", data={})
         await d._safe_publish(env)  # default impl is a no-op
 
+    @pytest.mark.asyncio
+    async def test_start_telemetry_missing_fields_raises(self):
+        class Dev(TelemetryMixin):
+            pass
+
+        d = Dev("test.tm.nofields")
+        d.node = MagicMock()
+        d.node.device_id = "d1"
+        d.node.is_running = True
+        with pytest.raises(AttributeError):
+            await d.start_telemetry()
+
     def test_get_min_freq_default(self):
         class Dev(TelemetryMixin):
             Kamio_FIELDS = {}

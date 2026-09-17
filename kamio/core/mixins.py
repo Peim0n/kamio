@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, Optional
 
-from kamio.data_fields import parse_freq
+from kamio.data_fields import Field, parse_freq
 
 if TYPE_CHECKING:
+    from kamio.app import KamioApp
+    from kamio.drivers.base import BaseDriver
+
     from .envelope import Envelope
     from .mqtt_nodes import DeviceNode
 
@@ -44,7 +47,16 @@ class TaskManagerMixin:
 
 
 class TelemetryMixin(TaskManagerMixin):
-    """Mixin for periodic telemetry publication."""
+    """Mixin for periodic telemetry publication.
+
+    Composition contract: the host class must provide ``Kamio_FIELDS``
+    (set by :class:`~kamio.core.device_meta.DeviceMeta`) and may provide
+    ``_app`` and ``driver``.
+    """
+
+    Kamio_FIELDS: ClassVar[Dict[str, Field]]
+    _app: Optional[KamioApp] = None
+    driver: Optional[BaseDriver] = None
 
     enable_telemetry: bool = True
 
@@ -55,10 +67,8 @@ class TelemetryMixin(TaskManagerMixin):
 
     def _get_min_freq(self) -> float:
         """Return the minimum telemetry frequency, configurable via app.config."""
-        app = getattr(self, "_app", None)
-        config = getattr(app, "config", None) if app else None
-        if config is not None:
-            result: float = config.get("telemetry_min_freq", 0.1, cast=float)
+        if self._app is not None:
+            result: float = self._app.config.get("telemetry_min_freq", 0.1, cast=float)
             return result
         return 0.1
 
@@ -76,10 +86,9 @@ class TelemetryMixin(TaskManagerMixin):
 
         min_freq = self._get_min_freq()
         freq_groups: dict[float, list[str]] = {}
-        fields_source = getattr(self, "Kamio_FIELDS", {})
 
         device_id = self.node.device_id if self.node else "?"
-        for field_name, field in fields_source.items():
+        for field_name, field in self.Kamio_FIELDS.items():
             if field.kind == "telemetry":
                 raw_freq = field.freq
                 seconds = parse_freq(raw_freq)
@@ -139,10 +148,9 @@ class TelemetryMixin(TaskManagerMixin):
 
         Subclasses may override to apply custom parsing logic.
         """
-        driver = getattr(self, "driver", None)
-        if driver is None:
+        if self.driver is None:
             return None
-        result = await driver.read(field_name)
+        result = await self.driver.read(field_name)
         # Unwrap the standard driver response envelope.
         if isinstance(result, dict) and "data" in result:
             return result["data"]
@@ -161,8 +169,7 @@ class TelemetryMixin(TaskManagerMixin):
         data = {}
         for name in field_names:
             val = None
-            driver = getattr(self, "driver", None)
-            if driver is not None:
+            if self.driver is not None:
                 try:
                     val = await self.read_telemetry_value(name)
                 except Exception as e:
