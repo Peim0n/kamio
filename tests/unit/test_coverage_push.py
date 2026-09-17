@@ -727,6 +727,18 @@ def test_ssl_context_tls_version_with_explicit_options():
     assert ctx.check_hostname is False
 
 
+def test_ssl_context_cert_none_disables_check_hostname():
+    """CERT_NONE without explicit check_hostname must not raise and must disable it."""
+    import ssl
+
+    from kamio.core.mqtt_connection import MqttConnection
+
+    for extra in ({}, {"tls_version": ssl.PROTOCOL_TLS_CLIENT}):
+        ctx = MqttConnection._build_ssl_context({"cert_reqs": "NONE", **extra})
+        assert ctx.verify_mode == ssl.CERT_NONE
+        assert ctx.check_hostname is False
+
+
 def test_ssl_context_tls_version_constant():
     import ssl
 

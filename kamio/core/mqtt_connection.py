@@ -114,8 +114,29 @@ class MqttConnection:
             check_hostname: Whether to verify the server hostname (bool).
             tls_version:  ssl.PROTOCOL_* constant or string name.
         """
-        ctx = ssl.create_default_context()
+        tls_version = tls.get("tls_version")
+        if tls_version is None:
+            ctx = ssl.create_default_context()
+        else:
+            if isinstance(tls_version, str):
+                tls_version = getattr(ssl, f"PROTOCOL_{tls_version.upper()}")
+            # ssl.SSLContext() does NOT inherit the secure defaults of
+            # create_default_context() (verify_mode defaults to CERT_NONE,
+            # check_hostname to False), so _apply_tls_options always sets
+            # verify_mode and check_hostname explicitly.
+            ctx = ssl.SSLContext(tls_version)
 
+        MqttConnection._apply_tls_options(ctx, tls)
+        return ctx
+
+    @staticmethod
+    def _apply_tls_options(ctx: ssl.SSLContext, tls: dict[str, Any]) -> None:
+        """Apply CA/cert loading and verification settings from ``tls`` to ``ctx``.
+
+        verify_mode and check_hostname are always set explicitly (defaulting
+        to CERT_REQUIRED / True) so the result does not depend on how ``ctx``
+        was constructed.
+        """
         cafile = tls.get("cafile")
         capath = tls.get("capath")
         if cafile or capath:
@@ -127,52 +148,22 @@ class MqttConnection:
             ctx.load_cert_chain(certfile=certfile, keyfile=keyfile)
 
         cert_reqs = tls.get("cert_reqs", tls.get("verify_mode"))
-        if cert_reqs is not None:
-            if isinstance(cert_reqs, str):
-                cert_reqs = getattr(ssl, f"CERT_{cert_reqs.upper()}", ssl.CERT_REQUIRED)
-            # check_hostname cannot be True when verify_mode is CERT_NONE.
-            # Disable it first to avoid ValueError from the ssl module.
-            if cert_reqs == ssl.CERT_NONE:
-                ctx.check_hostname = False
-            ctx.verify_mode = cert_reqs  # type: ignore[assignment]
+        if isinstance(cert_reqs, str):
+            cert_reqs = getattr(ssl, f"CERT_{cert_reqs.upper()}", ssl.CERT_REQUIRED)
+        effective_reqs = cert_reqs if cert_reqs is not None else ssl.CERT_REQUIRED
 
         check_hostname = tls.get("check_hostname")
-        if check_hostname is not None:
-            ctx.check_hostname = bool(check_hostname)
+        effective_check = (
+            bool(check_hostname) if check_hostname is not None else effective_reqs != ssl.CERT_NONE
+        )
 
-        tls_version = tls.get("tls_version")
-        if tls_version is not None:
-            if isinstance(tls_version, str):
-                tls_version = getattr(ssl, f"PROTOCOL_{tls_version.upper()}")
-            # ssl.SSLContext() does NOT inherit the secure defaults of
-            # create_default_context() (verify_mode defaults to CERT_NONE,
-            # check_hostname to False).  Re-apply every previously-set option
-            # so that specifying tls_version does not silently disable TLS
-            # verification — a security-critical regression.
-            ctx = ssl.SSLContext(tls_version)
-            if cafile or capath:
-                ctx.load_verify_locations(cafile=cafile, capath=capath)
-            if certfile:
-                ctx.load_cert_chain(certfile=certfile, keyfile=keyfile)
-            # Determine the effective verify_mode and check_hostname.
-            # check_hostname cannot be True when verify_mode is CERT_NONE,
-            # so set check_hostname=False first when going to CERT_NONE.
-            effective_reqs = cert_reqs if cert_reqs is not None else ssl.CERT_REQUIRED
-            effective_check = (
-                bool(check_hostname)
-                if check_hostname is not None
-                else effective_reqs != ssl.CERT_NONE
-            )
-            if not effective_check:
-                # Must disable check_hostname before setting CERT_NONE, and
-                # also before setting CERT_REQUIRED when check_hostname is
-                # explicitly False.
-                ctx.check_hostname = False
-            ctx.verify_mode = effective_reqs  # type: ignore[assignment]
-            if effective_check:
-                ctx.check_hostname = True
-
-        return ctx
+        # check_hostname cannot be True when verify_mode is CERT_NONE, so
+        # disable it before changing verify_mode and only re-enable it after.
+        if not effective_check:
+            ctx.check_hostname = False
+        ctx.verify_mode = effective_reqs  # type: ignore[assignment]
+        if effective_check:
+            ctx.check_hostname = True
 
     # ------------------------------------------------------------------
     # gmqtt callbacks
