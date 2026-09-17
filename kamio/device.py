@@ -3,7 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, Dict, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    ClassVar,
+    Dict,
+    Optional,
+    ParamSpec,
+    TypeVar,
+    overload,
+)
 
 from kamio.core.device_meta import DeviceMeta
 from kamio.core.envelope import Envelope
@@ -16,8 +27,21 @@ if TYPE_CHECKING:
 
     from .app import KamioApp
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def command(func: Any = None, *, name: Optional[str] = None) -> Any:
+
+@overload
+def command(func: Callable[P, R], /) -> Callable[P, R]: ...
+
+
+@overload
+def command(*, name: Optional[str] = None) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+def command(
+    func: Optional[Callable[P, R]] = None, *, name: Optional[str] = None
+) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """
     Decorator to expose a device method as an RPC command.
 
@@ -40,9 +64,9 @@ def command(func: Any = None, *, name: Optional[str] = None) -> Any:
                 self.power = True
     """
 
-    def wrapper(f: Any) -> Any:
-        f._is_command = True
-        f._command_name = name or f.__name__
+    def wrapper(f: Callable[P, R]) -> Callable[P, R]:
+        f._is_command = True  # type: ignore[attr-defined]
+        f._command_name = name or f.__name__  # type: ignore[attr-defined]
         return f
 
     if func is None:
@@ -50,9 +74,22 @@ def command(func: Any = None, *, name: Optional[str] = None) -> Any:
     return wrapper(func)
 
 
+@overload
+def rule(func: Callable[P, R], /) -> Callable[P, R]: ...
+
+
+@overload
 def rule(
-    func: Any = None, *, fields: Optional[list] = None, description: Optional[str] = None
-) -> Any:
+    *, fields: Optional[list] = None, description: Optional[str] = None
+) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+
+def rule(
+    func: Optional[Callable[P, R]] = None,
+    *,
+    fields: Optional[list] = None,
+    description: Optional[str] = None,
+) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """
     Decorator to define a device-level automation rule.
 
@@ -70,10 +107,10 @@ def rule(
                     print("Light turned on")
     """
 
-    def wrapper(f: Any) -> Any:
-        f._is_rule = True
-        f._rule_fields = fields
-        f._rule_description = description
+    def wrapper(f: Callable[P, R]) -> Callable[P, R]:
+        f._is_rule = True  # type: ignore[attr-defined]
+        f._rule_fields = fields  # type: ignore[attr-defined]
+        f._rule_description = description  # type: ignore[attr-defined]
         return f
 
     if func is None:
