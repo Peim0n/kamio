@@ -42,6 +42,11 @@ class CustomNode(ABC):
         self._is_running: bool = False
         self.logger = logging.getLogger(f"Kamio.node.{self.__class__.__name__}")
 
+    @property
+    def is_running(self) -> bool:
+        """Return whether the node is running."""
+        return self._is_running
+
     # ------------------------------------------------------------------
     # Abstract interface
     # ------------------------------------------------------------------
@@ -59,12 +64,26 @@ class CustomNode(ABC):
         so subscriptions are cleaned up; otherwise the unsubscribe logic
         below is skipped.
         """
+        self._teardown_subscriptions()
+
+    def _teardown_subscriptions(self) -> None:
+        """Unsubscribe from all topics and mark the node as stopped."""
         for topic in self._subscriptions:
             try:
                 self.mqtt_client.unsubscribe(topic)
             except Exception as e:
                 self.logger.warning(f"Failed to unsubscribe from {topic}: {e}")
         self._subscriptions.clear()
+        self._is_running = False
+
+    async def _start_running(self) -> None:
+        """Run :meth:`start` and mark the node as running."""
+        await self.start()
+        self._is_running = True
+
+    async def _stop_running(self) -> None:
+        """Run :meth:`stop` and mark the node as stopped."""
+        await self.stop()
         self._is_running = False
 
     @abstractmethod
@@ -220,7 +239,7 @@ class CustomNodeManager:
         # Clean up the node's MQTT subscriptions.  stop() is async, so
         # schedule it on the app's event loop if one is available; fall back
         # to a synchronous best-effort unsubscribe otherwise.
-        if node._is_running:
+        if node.is_running:
             loop = getattr(self._app, "_loop", None)
             if loop is not None and not loop.is_closed():
                 task = loop.create_task(node.stop())
@@ -230,13 +249,7 @@ class CustomNodeManager:
             else:
                 # No running loop — do a synchronous best-effort cleanup of
                 # subscriptions so they don't leak past the node's lifetime.
-                for topic in node._subscriptions:
-                    try:
-                        node.mqtt_client.unsubscribe(topic)
-                    except Exception:
-                        pass
-                node._subscriptions.clear()
-                node._is_running = False
+                node._teardown_subscriptions()
         logger.info(f"Unregistered custom node: '{name}'")
 
     def get_node(self, name: str) -> Optional[CustomNode]:
@@ -255,7 +268,7 @@ class CustomNodeManager:
         """Start all registered nodes. Errors in one node don't stop others."""
         for name, node in self._nodes.items():
             try:
-                await node.start()
+                await node._start_running()
             except Exception as e:
                 logger.error(f"Failed to start custom node '{name}': {e}", exc_info=True)
                 await self._app.event_bus.publish(
@@ -267,7 +280,6 @@ class CustomNodeManager:
                     },
                 )
                 continue
-            node._is_running = True
             logger.info(f"Started custom node: '{name}'")
             await self._app.event_bus.publish(
                 "custom_node_started",
@@ -280,11 +292,10 @@ class CustomNodeManager:
     async def stop_all(self) -> None:
         """Stop all registered nodes in reverse registration order."""
         for name, node in reversed(list(self._nodes.items())):
-            if not node._is_running:
+            if not node.is_running:
                 continue
             try:
-                await node.stop()
-                node._is_running = False
+                await node._stop_running()
                 logger.info(f"Stopped custom node: '{name}'")
                 await self._app.event_bus.publish(
                     "custom_node_stopped",

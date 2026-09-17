@@ -88,15 +88,12 @@ class MqttDispatchMixin:
     def _resubscribe_all_nodes(self: Any) -> None:
         """Re-subscribe the server node and all device nodes after a reconnect.
 
-        Each node's ``start()`` is idempotent (it checks ``_is_running``), so
-        we temporarily reset the flag to force re-subscription without
-        re-invoking device lifecycle hooks.
+        Running nodes get ``_resubscribe()`` scheduled, which restores
+        subscriptions without touching lifecycle hooks or the running flag.
         """
         for node in [self.server_node] + list(self._device_nodes.values()):
-            if not getattr(node, "_is_running", False):
+            if not node.is_running:
                 continue
-            # Force re-subscription by resetting the running flag.
-            node._is_running = False
             self._run_coro_threadsafe(node._resubscribe())
 
     def _on_mqtt_message(self: Any, client, topic, payload, qos=0, properties=None):

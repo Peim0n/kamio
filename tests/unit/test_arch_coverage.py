@@ -329,6 +329,32 @@ async def test_on_mqtt_connect_resubscribes(mock_mqtt):
 
 
 @pytest.mark.asyncio
+async def test_resubscribe_all_nodes_preserves_running_and_skips_stopped(mock_mqtt):
+    """Reconnect schedules resubscription only for nodes already running."""
+    from kamio.core.mqtt_nodes import BaseNode
+
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-resub-state")
+    app._loop = asyncio.get_running_loop()
+    app._mqtt_bg_tasks = set()
+
+    running_node = BaseNode("running", mock_mqtt)
+    stopped_node = BaseNode("stopped", mock_mqtt)
+    running_node._is_running = True
+    app.server_node = running_node
+    app._device_nodes = {"stopped": stopped_node}
+    running_node._resubscribe = AsyncMock()
+    stopped_node._resubscribe = AsyncMock()
+
+    app._resubscribe_all_nodes()
+
+    assert running_node.is_running is True
+    assert stopped_node.is_running is False
+    await asyncio.sleep(0)
+    running_node._resubscribe.assert_awaited_once()
+    stopped_node._resubscribe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_on_mqtt_message_routes_to_device(mock_mqtt):
     """_on_mqtt_message should route messages to device nodes."""
     import json

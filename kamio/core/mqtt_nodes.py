@@ -89,11 +89,10 @@ class BaseNode:
         logger.info(f"Node {self.device_id} stopped")
 
     async def _resubscribe(self) -> None:
-        """Re-subscribe to topics after a broker reconnect.
+        """Idempotently restore subscriptions after a broker reconnect.
 
-        Unlike ``start()`` this does **not** call device lifecycle hooks
-        (``on_start``); it only restores MQTT subscriptions and marks the
-        node as running.
+        This can be called while the node is running and is the entry point
+        used after a broker reconnect; no running-flag reset is needed.
         """
         self._loop = asyncio.get_running_loop()
 

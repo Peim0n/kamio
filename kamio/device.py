@@ -649,15 +649,6 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
                 self.subscribe_absolute(self._topic, qos=1)
                 self._is_running = True
 
-            async def stop(self) -> None:
-                for t in self._subscriptions:
-                    try:
-                        self.mqtt_client.unsubscribe(t)
-                    except Exception:
-                        pass
-                self._subscriptions.clear()
-                self._is_running = False
-
             async def handle_message(self, topic: str, payload: bytes) -> None:
                 import inspect
 
