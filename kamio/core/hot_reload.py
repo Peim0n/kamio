@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from kamio.app import KamioApp
+    from kamio.core.rules import Rule
 
 logger = logging.getLogger("Kamio.hot_reload")
 
@@ -387,10 +388,7 @@ async def reload_rules_from_file(file_path: str, app: "KamioApp") -> bool:
 
     except Exception as e:
         logger.error(f"[hot-reload] Error reloading rules from '{file_path}': {e}", exc_info=True)
-        await app.rules.stop()
-        await app.rules.set_rules(old_rules)
-        if app._is_running:
-            await app.rules.start()
+        await _restore_rules(app, old_rules)
         await _publish_reload_error(app, file_path, e)
         return False
 
@@ -447,7 +445,6 @@ async def reload_devices_from_file(file_path: str, app: "KamioApp") -> bool:
         # Rollback: restore the previous class mapping and rule set so the
         # application is not left with a partially-applied reload.
         try:
-            await app.rules.stop()
             # Restore classes: re-register every old class (this overwrites
             # any half-registered new ones) and drop any new device types
             # that did not exist before the reload.
@@ -456,9 +453,7 @@ async def reload_devices_from_file(file_path: str, app: "KamioApp") -> bool:
                 app.registry.register_class(cls)
             for extra in new_type_names:
                 app.registry.unregister_class(extra)
-            await app.rules.set_rules(old_rules)
-            if app._is_running:
-                await app.rules.start()
+            await _restore_rules(app, old_rules)
         except Exception as rb_err:
             logger.error(f"[hot-reload] Rollback failed: {rb_err}", exc_info=True)
         await _publish_reload_error(app, file_path, e)
@@ -490,6 +485,14 @@ async def reload_config_from_file(file_path: str, app: "KamioApp") -> bool:
         logger.error(f"[hot-reload] Error reloading config '{file_path}': {e}", exc_info=True)
         await _publish_reload_error(app, file_path, e)
         return False
+
+
+async def _restore_rules(app: "KamioApp", old_rules: List["Rule"]) -> None:
+    """Stop the rule engine, restore ``old_rules`` and restart it if the app is running."""
+    await app.rules.stop()
+    await app.rules.set_rules(old_rules)
+    if app._is_running:
+        await app.rules.start()
 
 
 async def _publish_reload_error(app: "KamioApp", file_path: str, error: Exception) -> None:
