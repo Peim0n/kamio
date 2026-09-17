@@ -53,45 +53,39 @@ class HTTPDeviceDriver(BaseDriver):
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Perform an HTTP GET request and return the parsed response."""
-        if not self.session:
-            raise RuntimeError("HTTP session not connected")
         params = params or {}
-        path = params.get("path", field_name).lstrip("/")
-        url = f"{self.base_url}/{path}" if path else self.base_url
-        async with self.session.request("GET", url) as response:
-            response.raise_for_status()
-            content_type = getattr(response, "content_type", "") or ""
-            is_json = content_type.startswith("application/json")
-            result = await response.json() if is_json else await response.text()
-            return {
-                "status": "ok",
-                "code": response.status,
-                "field": field_name,
-                "data": result,
-            }
+        code, result = await self._request("GET", self._build_url(field_name, params))
+        return {"status": "ok", "code": code, "field": field_name, "data": result}
 
     async def execute(self, command_name: str, params: dict) -> dict:
         """Perform an HTTP request (GET/POST/etc.) and return the parsed response."""
-        if not self.session:
-            raise RuntimeError("HTTP session not connected")
-
         params = params or {}
         method = params.get("method", "POST").upper()
-        path = params.get("path", command_name).lstrip("/")
-        url = f"{self.base_url}/{path}"
-        data = params.get("data")
         json_data = params.get("json") if "json" in params else params.get("value")
+        code, result = await self._request(
+            method,
+            self._build_url(command_name, params),
+            data=params.get("data"),
+            json=json_data if isinstance(json_data, dict) else None,
+        )
+        return {"status": "ok", "code": code, "command": command_name, "data": result}
 
-        async with self.session.request(
-            method, url, data=data, json=json_data if isinstance(json_data, dict) else None
-        ) as response:
+    def _build_url(self, name: str, params: Dict[str, Any]) -> str:
+        """Join ``base_url`` with ``params["path"]`` (default ``name``)."""
+        path = params.get("path", name).lstrip("/")
+        return f"{self.base_url}/{path}" if path else self.base_url
+
+    async def _request(self, method: str, url: str, **kwargs: Any) -> tuple[int, Any]:
+        """Issue the request and return ``(status_code, parsed_body)``.
+
+        The body is decoded as JSON when the content type is ``application/json``
+        and as text otherwise. HTTP errors are raised via ``raise_for_status``.
+        """
+        if not self.session:
+            raise RuntimeError("HTTP session not connected")
+        async with self.session.request(method, url, **kwargs) as response:
             response.raise_for_status()
             content_type = getattr(response, "content_type", "") or ""
             is_json = content_type.startswith("application/json")
             result = await response.json() if is_json else await response.text()
-            return {
-                "status": "ok",
-                "code": response.status,
-                "command": command_name,
-                "data": result,
-            }
+            return response.status, result
