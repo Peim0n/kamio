@@ -156,8 +156,8 @@ class DeviceHandler:
                 self.device._own_state_cinds.discard(env.cind)
                 try:
                     self.device._own_state_cinds_order.remove(env.cind)
-                except (AttributeError, ValueError):
-                    # _own_state_cinds_order may not exist on older Device instances.
+                except ValueError:
+                    # cind already evicted from the bounded order list.
                     pass
         if is_own_echo:
             return

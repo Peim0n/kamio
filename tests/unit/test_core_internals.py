@@ -1079,15 +1079,15 @@ class TestDeviceHandler:
         assert env.cind not in device._own_state_cinds
 
     @pytest.mark.asyncio
-    async def test_handle_state_own_echo_no_order_list(self, mock_mqtt):
+    async def test_handle_state_own_echo_not_in_order_list(self, mock_mqtt):
         device = Light()
         node = DeviceNode("light1", mock_mqtt)
         device.node = node
         handler = DeviceHandler(device, node)
         env = Envelope.state(source="light1", data={"power": True})
-        device._own_state_cinds.add(env.cind)
-        del device._own_state_cinds_order  # simulate older instance
+        device._own_state_cinds.add(env.cind)  # evicted from order list, still in set
         await handler._handle_state(env)  # should not raise
+        assert env.cind not in device._own_state_cinds
 
     @pytest.mark.asyncio
     async def test_handle_state_normal(self, setup):
