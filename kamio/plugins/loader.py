@@ -87,8 +87,20 @@ class PluginContext:
         """Schedule a background task and keep a reference for cleanup."""
         task = asyncio.create_task(coro, name=name)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._on_task_done)
         return task
+
+    def _on_task_done(self, task: asyncio.Task) -> None:
+        """Stop tracking a finished task and log it if it failed."""
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._logger.error(
+                f"Background task '{task.get_name()}' failed: {exc}",
+                exc_info=exc,
+            )
 
     async def cancel_tasks(self) -> None:
         """Cancel all background tasks started by this plugin and await them.
