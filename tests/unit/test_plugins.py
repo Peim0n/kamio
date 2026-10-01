@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import pytest
 
 from kamio import KamioApp
@@ -110,3 +113,32 @@ async def test_multiple_plugins_simultaneous():
     b = await app.load_plugin(BetaPlugin)
     assert a is app.get_plugin("alpha")
     assert b is app.get_plugin("beta")
+
+
+@pytest.mark.asyncio
+async def test_plugin_task_failure_logged(caplog):
+    ctx = PluginContext(KamioApp(), "alpha")
+
+    async def boom():
+        raise RuntimeError("worker crashed")
+
+    task = ctx.create_task(boom(), name="worker")
+    with caplog.at_level(logging.ERROR, logger="Kamio.plugin.alpha"):
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+    assert task not in ctx._tasks
+    assert any(
+        r.name == "Kamio.plugin.alpha" and r.exc_info and "worker" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_plugin_task_cancel_not_logged(caplog):
+    ctx = PluginContext(KamioApp(), "alpha")
+    task = ctx.create_task(asyncio.sleep(10), name="sleeper")
+    with caplog.at_level(logging.ERROR, logger="Kamio.plugin.alpha"):
+        await ctx.cancel_tasks()
+        await asyncio.sleep(0)
+    assert task not in ctx._tasks
+    assert not [r for r in caplog.records if r.name == "Kamio.plugin.alpha"]
