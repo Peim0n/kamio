@@ -458,3 +458,34 @@ async def test_logging_plugin_loads_with_config(tmp_path):
     assert plugin._handler is None
     assert not any(getattr(h, "baseFilename", None) == str(log_file) for h in kamio_logger.handlers)
     assert app.event_bus.list_subscribers("device_added") == []
+
+
+class _CountingDict(dict):
+    items_calls = 0
+
+    def items(self):  # type: ignore[override]
+        type(self).items_calls += 1
+        return super().items()
+
+
+def test_logging_plugin_skips_payload_copy_when_event_level_disabled():
+    plugin = LoggingPlugin()
+    plugin.configure({"event_level": "DEBUG"})
+    plugin.logger.setLevel(logging.INFO)
+    data = _CountingDict(device=object(), value=1)
+    _CountingDict.items_calls = 0
+    try:
+        plugin._log_event(data)
+    finally:
+        plugin.logger.setLevel(logging.NOTSET)
+
+    assert _CountingDict.items_calls == 0
+
+
+def test_logging_plugin_logs_filtered_payload_when_enabled(caplog):
+    plugin = LoggingPlugin()
+    plugin.configure({"event_level": "INFO"})
+    with caplog.at_level(logging.INFO, logger=plugin.logger.name):
+        plugin._log_event({"device": object(), "value": 1})
+
+    assert any(r.getMessage() == "event received: {'value': 1}" for r in caplog.records)

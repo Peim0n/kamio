@@ -105,6 +105,8 @@ class LoggingPlugin(Plugin):
         are buffered by the OS), so this does not block the event loop
         measurably for typical event volumes.
         """
+        if not self.logger.isEnabledFor(self._event_level):
+            return
         self.logger.log(
             self._event_level,
             "event received: %s",
