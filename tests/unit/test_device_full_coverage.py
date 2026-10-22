@@ -572,6 +572,64 @@ async def test_handle_config_validation_error():
         await d.handle_config({"level": 100})
 
 
+@pytest.mark.asyncio
+async def test_validate_value_type_coercion():
+    """Coercible strings normalise to the declared type; bad values raise (LOC-06)."""
+
+    class CoerceDevice(Device):
+        port: int = config(default=80)
+        ratio: float = config(default=0.5)
+        enabled: bool = config(default=False)
+        name: str = config(default="x")
+
+    d = CoerceDevice()
+
+    # "8080" coerces to int; "0.75" coerces to float
+    applied = await d.handle_config({"port": "8080", "ratio": "0.75"})
+    assert applied == {"port": 8080, "ratio": 0.75}
+    assert d.port == 8080 and isinstance(d.port, int)
+    assert d.ratio == 0.75 and isinstance(d.ratio, float)
+
+    # int → float coercion for a float field
+    applied = await d.handle_config({"ratio": 2})
+    assert applied == {"ratio": 2.0}
+    assert isinstance(d.ratio, float)
+
+    # Non-coercible string on a numeric field → ValueError
+    with pytest.raises(ValueError, match="Invalid type"):
+        await d.handle_config({"port": "bad_value"})
+    assert d.port == 8080  # unchanged
+
+    # bool field accepts only real bools
+    with pytest.raises(ValueError, match="expected bool"):
+        await d.handle_config({"enabled": 1})
+    with pytest.raises(ValueError, match="expected bool"):
+        await d.handle_config({"enabled": "true"})
+    applied = await d.handle_config({"enabled": True})
+    assert applied == {"enabled": True}
+
+    # bool value rejected on a non-bool field (no True → 1.0 coercion)
+    with pytest.raises(ValueError, match="Invalid type"):
+        await d.handle_config({"ratio": True})
+
+
+@pytest.mark.asyncio
+async def test_setattr_applies_type_coercion():
+    """Direct attribute assignment stores the coerced value (LOC-06)."""
+
+    class CoerceDevice(Device):
+        value: float = state(default=0.0, writable=True)
+
+    d = CoerceDevice()
+    d.value = "42"
+    assert d.value == 42.0
+    assert isinstance(d.value, float)
+
+    with pytest.raises(ValueError, match="Invalid type"):
+        d.value = "abc"
+    assert d.value == 42.0
+
+
 # ---------------------------------------------------------------------------
 # get_schema cached
 # ---------------------------------------------------------------------------

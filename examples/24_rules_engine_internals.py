@@ -11,8 +11,9 @@ RuleEngine — сердце автоматизации kamio.  Но его вн�
 ПОДВОХИ И КРАЕВЫЕ СЛУЧАИ:
 
     Обнаружение device-level правил:
-      1. "." в __qualname__ — лямбды (lambda) НЕ обнаруживаются как
-         device-level правила (у лямбды __qualname__ = "<lambda>").
+      1. _is_rule + "." в __qualname__ — device-level правило определяется
+         флагом _is_rule (ставит только @rule из kamio.device) и точкой
+         в __qualname__. Lambda без _is_rule device-level не станет.
       2. Параметры: 0=без аргументов, 1=event, 2+=event+app.
          Диспетчеризация по len(sig.parameters), не по типам.
 
@@ -34,8 +35,8 @@ RuleEngine — сердце автоматизации kamio.  Но его вн�
      10. Interval rules молча фильтруются в handle_device_update (interval is not None → continue).
      11. Field filtering: правило срабатывает, если ЛЮБОЕ из watched fields
          есть в snapshot (any(), не all()).
-     12. Snapshot — shallow copy (dict(event.data)).  Вложенные mutable объекты
-         могут быть изменены через ссылку.
+     12. Snapshot — event.data передаётся по ссылке без копии.  Любые правки
+         event.data мутируют исходный snapshot.
 
     Base class matching:
      13. handle_device_update проверяет MRO базовых классов.
@@ -45,6 +46,7 @@ RuleEngine — сердце автоматизации kamio.  Но его вн�
 
     python examples/24_rules_engine_internals.py
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -64,6 +66,7 @@ logger = logging.getLogger("example.24")
 # Mock App для RuleEngine
 # ============================================================================
 
+
 class MockApp:
     """Минимальный mock KamioApp для тестирования RuleEngine."""
 
@@ -80,12 +83,13 @@ class MockApp:
 
 
 # ============================================================================
-# 1. Device-level rule detection: "." in __qualname__ (lambda не работает)
+# 1. Device-level rule detection: _is_rule + "." в __qualname__
 # ============================================================================
 
+
 async def demo_device_level_detection():
-    """Device-level rule обнаруживается через "." в __qualname__ — lambda не работает."""
-    print("\n--- 1. Device-level rule detection: '.' in __qualname__ ---")
+    """Device-level rule обнаруживается через _is_rule + "." в __qualname__."""
+    print("\n--- 1. Device-level rule detection: '_is_rule' + '.' in __qualname__ ---")
 
     class MyDevice(Device):
         power: bool = state(default=False, writable=True)
@@ -98,18 +102,21 @@ async def demo_device_level_detection():
     method = MyDevice.on_power_change
     assert "." in method.__qualname__, f"__qualname__ должен содержать '.': {method.__qualname__}"
 
-    # Декорируем как rule
+    # Декорируем как rule — это ставит _is_rule = True.
+    # ВАЖНО: _is_rule ставит ТОЛЬКО device-level @rule из kamio.device,
+    # app-level @app.rule его не ставит.
     from kamio.device import rule as rule_decorator
+
     decorated = rule_decorator(fields=["power"])(method)
     assert decorated._is_rule is True
     assert "." in decorated.__qualname__
-    print(f"  Метод класса: __qualname__='{decorated.__qualname__}' → содержит '.' → device-level OK")
+    print(f"  Метод класса: __qualname__='{decorated.__qualname__}' → device-level OK")
 
-    # НЕПРАВИЛЬНО: использовать lambda как device-level rule
-    # Lambda имеет __qualname__ = "<lambda>" — НЕТ точки!
+    # Lambda, вложенная в функцию, имеет __qualname__ с "<locals>." —
+    # точка в нём ЕСТЬ. Но у lambda нет _is_rule → она НЕ device-level.
+    # Детекция требует ВСЕ три условия, qualname — лишь эвристика "метода".
     lambda_fn = lambda event, app: None
-    assert "." not in lambda_fn.__qualname__, f"Lambda __qualname__: {lambda_fn.__qualname__}"
-    print(f"  Lambda: __qualname__='{lambda_fn.__qualname__}' → НЕТ '.' → НЕ device-level")
+    print(f"  Lambda: __qualname__='{lambda_fn.__qualname__}' → '.' есть, но _is_rule нет")
 
     # Проверка логики обнаружения из Rule.run():
     # is_device_level_rule = (
@@ -126,6 +133,14 @@ async def demo_device_level_detection():
     assert is_device_level_method is True
     print("  Метод с _is_rule + '.' в __qualname__ → is_device_level_rule=True")
 
+    # Без device_instance — тоже не device-level (app-level путь).
+    is_device_level_no_instance = (
+        getattr(decorated, "_is_rule", False)
+        and "." in getattr(decorated, "__qualname__", "")
+        and None is not None
+    )
+    assert is_device_level_no_instance is False
+
     is_device_level_lambda = (
         device_instance is not None
         and getattr(lambda_fn, "_is_rule", False)  # False для lambda
@@ -134,12 +149,13 @@ async def demo_device_level_detection():
     assert is_device_level_lambda is False
     print("  Lambda без _is_rule → is_device_level_rule=False")
 
-    print("  OK: device-level detection через __qualname__ проверен")
+    print("  OK: device-level detection через _is_rule + __qualname__ проверен")
 
 
 # ============================================================================
 # 2. Parameter count dispatch: 0=no args, 1=event, 2=event+app
 # ============================================================================
+
 
 async def demo_parameter_count_dispatch():
     """Диспетчеризация по количеству параметров: 0, 1, или 2+."""
@@ -172,9 +188,11 @@ async def demo_parameter_count_dispatch():
     for rule in rules:
         await rule.run(event, app)
 
-    assert call_log == ["zero", "one:{'power': True}", "two:{'power': True}"], (
-        f"Ожидали ['zero', 'one:...', 'two:...'], получили {call_log}"
-    )
+    assert call_log == [
+        "zero",
+        "one:{'power': True}",
+        "two:{'power': True}",
+    ], f"Ожидали ['zero', 'one:...', 'two:...'], получили {call_log}"
     print("  0 params -> rule_zero()")
     print("  1 param  -> rule_one(event)")
     print("  2 params -> rule_two(event, app)")
@@ -183,9 +201,9 @@ async def demo_parameter_count_dispatch():
     for rule, expected_count in [(Rule(rule_zero), 0), (Rule(rule_one), 1), (Rule(rule_two), 2)]:
         sig = inspect.signature(rule.func)
         param_count = len(sig.parameters)
-        assert param_count == expected_count, (
-            f"Ожидали {expected_count} параметров, получили {param_count}"
-        )
+        assert (
+            param_count == expected_count
+        ), f"Ожидали {expected_count} параметров, получили {param_count}"
 
     # ПОДВОХ: 3+ параметров тоже вызывается как (event, app) — extra не передаётся
     async def rule_three(event: RuleEvent, app, extra=None):
@@ -196,7 +214,9 @@ async def demo_parameter_count_dispatch():
     await rule_3.run(event, app)
     # rule_three имеет extra=None по умолчанию -> работает
     assert call_log == [f"three:{event.data}"]
-    print("  3 params (extra=None default) -> rule_three(event, app) — extra не передаётся, но default OK")
+    print(
+        "  3 params (extra=None default) -> rule_three(event, app) — extra не передаётся, но default OK"
+    )
 
     print("  OK: parameter count dispatch проверен")
 
@@ -204,6 +224,7 @@ async def demo_parameter_count_dispatch():
 # ============================================================================
 # 3. Interval rules start immediately if engine running
 # ============================================================================
+
 
 async def demo_interval_starts_immediately():
     """add_rule с interval при работающем engine -> задача стартует сразу."""
@@ -241,6 +262,7 @@ async def demo_interval_starts_immediately():
 # 4. Rule with both interval AND fields: never triggers as event rule
 # ============================================================================
 
+
 async def demo_interval_and_fields_never_event():
     """Rule с interval AND fields: НИКОГДА не срабатывает как event-rule."""
     print("\n--- 4. Rule with interval AND fields: never event rule ---")
@@ -268,9 +290,9 @@ async def demo_interval_and_fields_never_event():
     # handle_device_update фильтрует: if not rule.enabled or rule.interval is not None: continue
     await app.rules.handle_device_update("dev1", {"power": True})
 
-    assert event_call_count == 0, (
-        f"Rule с interval НЕ должна срабатывать как event, call_count={event_call_count}"
-    )
+    assert (
+        event_call_count == 0
+    ), f"Rule с interval НЕ должна срабатывать как event, call_count={event_call_count}"
     print("  Rule с interval=10.0 AND fields=['power'] -> НЕ сработала как event rule")
     print("  handle_device_update: rule.interval is not None -> continue (пропуск)")
 
@@ -283,6 +305,7 @@ async def demo_interval_and_fields_never_event():
 # ============================================================================
 # 5. remove_rule doesn't acquire lock (race)
 # ============================================================================
+
 
 async def demo_remove_rule_no_lock():
     """remove_rule НЕ захватывает _lock — гонка с handle_device_update."""
@@ -298,9 +321,9 @@ async def demo_remove_rule_no_lock():
 
     # remove_rule — синхронный метод, НЕ async, НЕ захватывает _lock
     # В отличие от set_rules, который делает: async with self._lock: ...
-    assert not inspect.iscoroutinefunction(app.rules.remove_rule), (
-        "remove_rule — синхронный метод, НЕ может использовать async lock"
-    )
+    assert not inspect.iscoroutinefunction(
+        app.rules.remove_rule
+    ), "remove_rule — синхронный метод, НЕ может использовать async lock"
     print("  remove_rule — синхронный метод, НЕ захватывает _lock")
 
     # Демонстрация: remove_rule можно вызвать без await
@@ -320,6 +343,7 @@ async def demo_remove_rule_no_lock():
 # 6. add_rule doesn't acquire lock (race with set_rules)
 # ============================================================================
 
+
 async def demo_add_rule_no_lock():
     """add_rule НЕ захватывает _lock — гонка с set_rules."""
     print("\n--- 6. add_rule doesn't acquire lock ---")
@@ -333,15 +357,15 @@ async def demo_add_rule_no_lock():
         pass
 
     # add_rule — синхронный метод
-    assert not inspect.iscoroutinefunction(app.rules.add_rule), (
-        "add_rule — синхронный метод, НЕ может использовать async lock"
-    )
+    assert not inspect.iscoroutinefunction(
+        app.rules.add_rule
+    ), "add_rule — синхронный метод, НЕ может использовать async lock"
     print("  add_rule — синхронный метод, НЕ захватывает _lock")
 
     # set_rules — async, захватывает lock
-    assert inspect.iscoroutinefunction(app.rules.set_rules), (
-        "set_rules — async метод, захватывает _lock"
-    )
+    assert inspect.iscoroutinefunction(
+        app.rules.set_rules
+    ), "set_rules — async метод, захватывает _lock"
     print("  set_rules — async метод, захватывает _lock")
 
     # Демонстрация гонки
@@ -365,6 +389,7 @@ async def demo_add_rule_no_lock():
 # ============================================================================
 # 7. start()/stop() don't acquire lock
 # ============================================================================
+
 
 async def demo_start_stop_no_lock():
     """start()/stop() НЕ захватывают _lock."""
@@ -401,6 +426,7 @@ async def demo_start_stop_no_lock():
 # ============================================================================
 # 8. Disabled rules silently skip (no logging)
 # ============================================================================
+
 
 async def demo_disabled_rules_silent():
     """Disabled rules молча пропускаются в handle_device_update — без логирования."""
@@ -440,6 +466,7 @@ async def demo_disabled_rules_silent():
 # 9. Field filtering: triggers if ANY watched field in snapshot
 # ============================================================================
 
+
 async def demo_field_filtering_any():
     """Field filtering: правило срабатывает, если ЛЮБОЕ из watched fields в snapshot."""
     print("\n--- 9. Field filtering: ANY watched field ---")
@@ -469,7 +496,9 @@ async def demo_field_filtering_any():
     # Snapshot содержит поле НЕ из fields -> НЕ срабатывает
     call_log.clear()
     await app.rules.handle_device_update("dev1", {"temperature": 25})
-    assert len(call_log) == 0, f"НЕ должна сработать (temperature not in fields), call_log={call_log}"
+    assert (
+        len(call_log) == 0
+    ), f"НЕ должна сработать (temperature not in fields), call_log={call_log}"
     print("  Snapshot={'temperature': 25} -> rule НЕ сработала (temperature not in fields)")
 
     # Snapshot содержит И watched И не-watched -> срабатывает (any)
@@ -486,19 +515,20 @@ async def demo_field_filtering_any():
 
 
 # ============================================================================
-# 10. Snapshot is shallow copy (nested mutables can be modified)
+# 10. Snapshot передаётся по ссылке (event.data IS исходный dict)
 # ============================================================================
 
+
 async def demo_snapshot_shallow_copy():
-    """Snapshot — dict(event.data), shallow copy.  Вложенные mutable можно изменить."""
-    print("\n--- 10. Snapshot is shallow copy ---")
+    """event.data — ТОТ ЖЕ dict, что передан в handle_device_update (никакой копии!)."""
+    print("\n--- 10. Snapshot передаётся по ссылке (без копии) ---")
 
     app = MockApp()
 
     received_data: list[dict] = []
 
     async def my_rule(event: RuleEvent, app):
-        # event.data — это shallow copy оригинального snapshot
+        # event.data — это САМ оригинальный snapshot, а не копия
         received_data.append(event.data)
 
     rule = Rule(func=my_rule, fields=["config"], description="shallow")
@@ -511,39 +541,38 @@ async def demo_snapshot_shallow_copy():
     assert len(received_data) == 1
     event_data = received_data[0]
 
-    # event.data — shallow copy: верхний уровень новый
-    assert event_data is not original_snapshot, "dict() создаёт новый dict"
-    print("  event.data — новый dict (shallow copy верхнего уровня)")
+    # event.data — ТА ЖЕ ссылка, что и оригинал: handle_device_update
+    # кладёт snapshot в RuleEvent без копирования.
+    assert event_data is original_snapshot, "event.data — сам оригинальный dict"
+    print("  event.data — ТА ЖЕ ссылка, что и оригинальный snapshot (без копии)")
 
-    # НО вложенные объекты — те же ссылки!
-    assert event_data["config"] is original_snapshot["config"], (
-        "Вложенный dict — та же ссылка (shallow copy)"
-    )
-    print("  event.data['config'] — ТАКАЯ ЖЕ ссылка, как в оригинале (shallow!)")
-
-    # ПОДВОХ: изменение вложенного объекта в rule влияет на оригинал
+    # ПОДВОХ: изменение event.data в rule напрямую мутирует оригинал —
+    # и верхний уровень тоже!
     event_data["config"]["threshold"] = 999
-    assert original_snapshot["config"]["threshold"] == 999, (
-        "Оригинал изменён через shallow copy!"
-    )
-    print("  После event.data['config']['threshold']=999 -> оригинал тоже 999!")
-
-    # Также и в Rule.run: snapshot = dict(event.data) — тоже shallow
-    print("  ВНИМАНИЕ: Rule.run делает dict(event.data) — тоже shallow copy")
+    event_data["injected_by_rule"] = True
+    assert (
+        original_snapshot["config"]["threshold"] == 999
+    ), "Оригинал изменён через event.data (вложенный объект)"
+    assert (
+        original_snapshot["injected_by_rule"] is True
+    ), "Оригинал изменён через event.data (верхний уровень)"
+    print("  Правки event.data видны в оригинальном snapshot полностью!")
 
     # ПРАВИЛЬНЫЙ ПОДХОД: deepcopy, если нужно изолировать
     import copy
+
     safe_copy = copy.deepcopy(original_snapshot)
     safe_copy["config"]["threshold"] = 0
     assert original_snapshot["config"]["threshold"] == 999, "deepcopy изолирует"
     print("  ПРАВИЛЬНО: использовать copy.deepcopy для изоляции вложенных объектов")
 
-    print("  OK: snapshot shallow copy проверен")
+    print("  OK: snapshot передаётся по ссылке проверен")
 
 
 # ============================================================================
 # 11. Base class matching: base_type could be None
 # ============================================================================
+
 
 async def demo_base_class_matching():
     """handle_device_update проверяет MRO — base_type может быть None."""
@@ -585,7 +614,9 @@ async def demo_base_class_matching():
     await app.rules.handle_device_update("smart1", {"power": True})
 
     # Rule для Device должна сработать, т.к. SmartLight наследует Device
-    assert call_count > 0, f"Rule для Device должна сработать для SmartLight, call_count={call_count}"
+    assert (
+        call_count > 0
+    ), f"Rule для Device должна сработать для SmartLight, call_count={call_count}"
     print(f"  Rule для Device сработала для SmartLight (MRO matching), call_count={call_count}")
 
     # Проверка: base_type может быть None для не-Device классов в MRO
@@ -604,6 +635,7 @@ async def demo_base_class_matching():
 # ============================================================================
 # 12. _rebuild_index on set_rules but not on add_rule/remove_rule
 # ============================================================================
+
 
 async def demo_rebuild_index_only_set_rules():
     """_rebuild_index вызывается в set_rules, но НЕ в add_rule/remove_rule."""
@@ -639,7 +671,9 @@ async def demo_rebuild_index_only_set_rules():
     await app.rules.set_rules([r3])
 
     # После set_rules индекс полностью перестроен
-    assert r2 not in app.rules._event_rules_by_type.get(None, []), "r2 должен быть удалён из индекса"
+    assert r2 not in app.rules._event_rules_by_type.get(
+        None, []
+    ), "r2 должен быть удалён из индекса"
     assert r3 in app.rules._event_rules_by_type[None], "r3 должен быть в индексе"
     print("  set_rules: _rebuild_index вызван — полная перестройка индекса")
 
@@ -660,6 +694,7 @@ async def demo_rebuild_index_only_set_rules():
 # ============================================================================
 # 13. Interval rules silently filtered in handle_device_update
 # ============================================================================
+
 
 async def demo_interval_filtered_in_handle_update():
     """Interval rules молча фильтруются в handle_device_update."""
@@ -694,6 +729,7 @@ async def demo_interval_filtered_in_handle_update():
 # ============================================================================
 # Main
 # ============================================================================
+
 
 async def main():
     print("=" * 70)

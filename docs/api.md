@@ -673,7 +673,11 @@ class CustomNode(ABC):
         """Asynchronous (non-blocking) publish relative to topic_prefix."""
 
     def matches(self, topic: str) -> bool:
-        """Returns True if topic starts with topic_prefix."""
+        """Returns True if topic starts with topic_prefix.
+
+        Exact match or prefix + "/". An empty topic_prefix matches every
+        topic (catch-all node).
+        """
 ```
 
 ### `CustomNodeManager`
@@ -692,7 +696,12 @@ async def stop_all(self) -> None:
     """Stop in reverse order."""
 
 async def route_message(self, topic: str, payload: bytes) -> bool:
-    """Route a message. True if at least one node handled it."""
+    """Route a message. True if at least one node handled it successfully.
+
+    If a matching node's handle_message raises, the error is logged, a
+    `custom_node_error` event is published, and that node does not count
+    as handled (returns False when no other node handled the message).
+    """
 
 def get_node(self, name: str) -> Optional[CustomNode]: ...
 def list_nodes(self) -> List[str]: ...

@@ -37,7 +37,17 @@ def mock_mqtt_client():
 def test_custom_node_matches_topic_prefix(mock_mqtt_client):
     node = BridgeNode(mock_mqtt_client, "sensors")
     assert node.matches("sensors/room/temp") is True
+    assert node.matches("sensors") is True
+    assert node.matches("sensorsroom/temp") is False
     assert node.matches("other/room/temp") is False
+
+
+def test_custom_node_matches_empty_prefix_is_catch_all(mock_mqtt_client):
+    node = BridgeNode(mock_mqtt_client, "///")
+    assert node.topic_prefix == ""
+    assert node.matches("any/topic") is True
+    assert node.matches("") is True
+    assert node.matches("/sub") is True
 
 
 @pytest.mark.asyncio

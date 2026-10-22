@@ -290,7 +290,8 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
         if field is not None:
             # Validate all field kinds (state, telemetry, config) so direct
             # assignment honours min/max/choices just like handle_state().
-            self._validate_value(field, value)
+            # The return value carries any type coercion (e.g. "42" → 42.0).
+            value = self._validate_value(field, value)
             if field.kind == "state":
                 old = self.__dict__.get(name, field.default)
                 self.__dict__[name] = value
@@ -467,6 +468,35 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
             raise ValueError(
                 f"Invalid value for {field.name}: {value}. Must be one of {field.choices}"
             )
+
+        # Runtime values must match the declared annotation.  ``bool`` is
+        # special in both directions: it is a subclass of ``int`` and
+        # ``bool("x")`` silently turns any non-empty string into True, so a
+        # bool field accepts only real bools, and a bool value is never
+        # coerced into a non-bool field.  For other concrete types we
+        # coerce where possible ("42" → 42 for an int field) and reject
+        # what cannot be converted.
+        python_type = field.python_type
+        if isinstance(python_type, type):
+            if python_type is bool:
+                if not isinstance(value, bool):
+                    raise ValueError(
+                        f"Invalid type for {field.name}: expected bool, got {value!r}"
+                    )
+            elif value is not None:
+                if isinstance(value, bool):
+                    raise ValueError(
+                        f"Invalid type for {field.name}: expected "
+                        f"{python_type.__name__}, got bool {value!r}"
+                    )
+                if not isinstance(value, python_type):
+                    try:
+                        value = python_type(value)
+                    except (TypeError, ValueError) as e:
+                        raise ValueError(
+                            f"Invalid type for {field.name}: expected "
+                            f"{python_type.__name__}, got {value!r}"
+                        ) from e
 
         # Attempt numeric coercion for min/max validation so that string
         # values like "42" are still range-checked.  If the value cannot be

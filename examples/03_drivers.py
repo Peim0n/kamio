@@ -69,7 +69,10 @@ class ClimateController(Device):
         """Аварийная остановка: выключить реле и вентилятор."""
         self.relay_on = False
         self.fan_speed = 0
-        logger.warning(f"Аварийная остановка на устройстве {self.node.device_id}")
+        # self.node привязывается KamioApp при старте; у standalone-устройства
+        # (без приложения) его нет — берём безопасный идентификатор.
+        device_id = self.node.device_id if self.node else "standalone"
+        logger.warning(f"Аварийная остановка на устройстве {device_id}")
         return {"relay_on": False, "fan_speed": 0}
 
     async def on_start(self, node):

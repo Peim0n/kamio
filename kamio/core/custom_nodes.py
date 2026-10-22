@@ -193,7 +193,12 @@ class CustomNode(ABC):
         )
 
     def matches(self, topic: str) -> bool:
-        """Return True if topic starts with this node's topic_prefix."""
+        """Return True if topic starts with this node's topic_prefix.
+
+        An empty ``topic_prefix`` matches every topic — a catch-all node.
+        """
+        if not self.topic_prefix:
+            return True
         return topic == self.topic_prefix or topic.startswith(self.topic_prefix + "/")
 
     def __repr__(self) -> str:

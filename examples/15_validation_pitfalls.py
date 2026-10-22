@@ -8,9 +8,9 @@
 
     1. Конструктор kwargs ПОЛНОСТЬЮ обходят валидацию (object.__setattr__)
     2. _apply_defaults тоже обходят валидацию
-    3. Строка "42" конвертируется в float для min/max, но "abc" тихо пропускает min/max
+    3. Строка "42" коэрцируется в float и сохраняется как float; "abc" → ValueError
     4. Choices: строка "42" != int 42 — валидация choices использует точное сравнение
-    5. bool исключён из числового приведения (True не проходит min/max как 1.0)
+    5. bool исключён из числового приведения (True на float-поле → ValueError)
     6. handle_state валидирует ВСЕ поля ДО применения ЛЮБОГО (атомарность)
     7. handle_config валидирует поле за полем (НЕ атомарно)
     8. Неизвестные/non-writable поля в handle_state тихо игнорируются (DEBUG log)
@@ -118,36 +118,44 @@ class NumericField(Device):
 
 
 def test_string_coercion_min_max():
-    """_validate_value пытается привести строку к float для min/max.
+    """_validate_value коэрцирует значение к объявленному типу поля.
 
-    Если строка приводится к числу — min/max проверяются.
-    Если строка НЕ приводится — min/max ПРОПУСКАЮТСЯ (тихо!).
+    Строка "42" приводится к 42.0 и СОХРАНЯЕТСЯ как float — runtime-значение
+    соответствует аннотации ``float``. Строка, которую нельзя привести
+    к числу ("abc"), вызывает ValueError, а не тихо проходит.
 
-    НЕПРАВИЛЬНО (если ожидается, что "abc" вызовет ошибку):
-        dev.value = "abc"  # Ожидаем ValueError, но min/max пропускаются!
+    НЕПРАВИЛЬНО (если ожидается, что строка сохранится как строка):
+        dev.value = "42"
+        # Ожидаем dev.value == "42" — но будет 42.0 (float)!
 
     ПРАВИЛЬНО:
-        Понимать, что _validate_value не делает type coercion.
-        Строковые значения проходят min/max, если не конвертируются в число.
+        Понимать, что _validate_value делает type coercion:
+        значение нормализуется к типу аннотации или вызывает ValueError.
     """
     dev = NumericField()
 
-    # "42" приводится к 42.0 — min/max проверяются и проходят
+    # "42" коэрцируется к 42.0 — сохраняется как float, не строка
     dev.value = "42"
-    assert dev.value == "42", "Значение сохраняется как строка '42', не как float"
+    assert dev.value == 42.0 and isinstance(dev.value, float), (
+        f"'42' коэрцировано в float: {dev.value!r}"
+    )
 
-    # "150" приводится к 150.0 — max=100.0 нарушен → ValueError
+    # "150" коэрцируется к 150.0 — max=100.0 нарушен → ValueError
     try:
         dev.value = "150"
         assert False, "Должно было вызвать ValueError: '150' → 150.0 > max=100.0"
     except ValueError as e:
         assert "too high" in str(e)
 
-    # "abc" НЕ приводится к float — min/max ПРОПУСКАЮТСЯ, значение принимается!
-    dev.value = "abc"
-    assert dev.value == "abc", "'abc' принято: min/max пропущены, т.к. float('abc') падает"
+    # "abc" НЕ приводится к float → ValueError, значение не меняется
+    try:
+        dev.value = "abc"
+        assert False, "Должно было вызвать ValueError: 'abc' не float"
+    except ValueError as e:
+        assert "Invalid type" in str(e)
+    assert dev.value == 42.0, "Значение не изменилось после ошибки валидации"
 
-    print('[OK] 3. "42" → min/max проверяются; "abc" → min/max пропускаются тихо')
+    print('[OK] 3. "42" → 42.0 (float); "abc" → ValueError (type coercion)')
 
 
 # =====================================================================
@@ -197,38 +205,56 @@ class BoolExclusion(Device):
 
 
 def test_bool_excluded_from_numeric_coercion():
-    """_validate_value исключает bool из числового приведения.
+    """bool-значение отклоняется для не-bool поля (никакой коэрции True → 1.0).
 
-    isinstance(True, int) == True в Python, но код явно проверяет:
-        isinstance(value, (int, float)) and not isinstance(value, bool)
+    isinstance(True, int) == True в Python, и float(True) == 1.0 — поэтому
+    _validate_value явно отклоняет bool для полей с не-bool типом:
+    никакой неявной конвертации True в 1.0 или "True".
 
-    Это значит, что True/False НЕ проверяются по min/max.
-    True не рассматривается как 1.0, False не как 0.0.
-
-    НЕПРАВИЛЬНО (если ожидается, что True пройдёт min=0/max=1):
-        dev.flag = True  # Ожидаем, что True == 1.0 и пройдёт max=1.0
+    НЕПРАВИЛЬНО (если ожидается, что True примется как 1.0):
+        dev.flag = True  # ValueError, а не 1.0!
 
     ПРАВИЛЬНО:
-        Понимать, что bool обходит min/max полностью.
+        Понимать, что bool отклоняется для не-bool полей, а bool-поле
+        принимает только реальные bool (не 0/1, не "true").
     """
     dev = BoolExclusion()
 
-    # True не приводится к 1.0 — min/max пропускаются, значение принимается
-    dev.flag = True
-    assert dev.flag is True, "True принято без min/max проверки (bool исключён)"
+    # True на float-поле → ValueError (bool не коэрцируется в 1.0)
+    try:
+        dev.flag = True
+        assert False, "Должно было вызвать ValueError: bool на float-поле"
+    except ValueError as e:
+        assert "Invalid type" in str(e)
 
-    # False тоже не приводится к 0.0
-    dev.flag = False
-    assert dev.flag is False, "False принято без min/max проверки (bool исключён)"
+    # False тоже отклоняется
+    try:
+        dev.flag = False
+        assert False, "Должно было вызвать ValueError: bool на float-поле"
+    except ValueError as e:
+        assert "Invalid type" in str(e)
 
-    # Для сравнения: int 2 проходит числовое приведение и нарушает max=1.0
+    # Для сравнения: int 2 коэрцируется в 2.0 и нарушает max=1.0
     try:
         dev.flag = 2
-        assert False, "Должно было вызвать ValueError: 2 > max=1.0"
+        assert False, "Должно было вызвать ValueError: 2.0 > max=1.0"
     except ValueError as e:
         assert "too high" in str(e)
 
-    print("[OK] 5. bool исключён из числового приведения (True != 1.0 для валидации)")
+    # И симметрично: bool-поле принимает только bool
+    class BoolField(Device):
+        flag: bool = state(default=False)
+
+    bf = BoolField()
+    bf.flag = True
+    assert bf.flag is True
+    try:
+        bf.flag = 1  # int 1 — не bool → ValueError
+        assert False, "Должно было вызвать ValueError: int на bool-поле"
+    except ValueError as e:
+        assert "expected bool" in str(e)
+
+    print("[OK] 5. bool исключён из приведения (True на float → ValueError)")
 
 
 # =====================================================================
@@ -407,10 +433,15 @@ def test_required_not_enforced():
     schema = RequiredField.get_schema()
     assert schema["fields"]["sensor_id"]["required"] is True, "required=True в схеме"
 
-    # handle_state тоже не проверяет required
+    # handle_state тоже не проверяет required: None проходит валидацию.
+    # Поскольку старое значение тоже None, applied_changes пуст
+    # (handle_state возвращает только фактические изменения).
     async def _check():
         result = await dev.handle_state({"sensor_id": None})
-        assert result == {"sensor_id": None}, "None принято при required=True"
+        assert result == {}, "None→None не считается изменением"
+        # А теперь реальное изменение на str — применяется
+        result = await dev.handle_state({"sensor_id": "s-1"})
+        assert result == {"sensor_id": "s-1"}, "str применён при required=True"
 
     asyncio.run(_check())
     print("[OK] 9. required=True НЕ проверяется в runtime — только в схеме")

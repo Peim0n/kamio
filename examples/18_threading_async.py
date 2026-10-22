@@ -12,17 +12,18 @@ Kamio — асинхронный фреймворк, но внутри испо�
 
 ПОДВОХИ И КРАЕВЫЕ СЛУЧАИ:
 
-    1. ``threading.Lock`` в async-контексте (кэш эха ``_cinds_lock``).
-       Блокирует ВЕСЬ event loop при contention — ни одна корутина не
-       выполняется, пока lock занят.
+    1. Кэш эха (``_echo_cache``) — ``OrderedDict`` БЕЗ lock.  ``remember``/
+       ``consume`` — O(1) операции без точек переключения, поэтому lock
+       в event-loop-контексте не нужен (и ``__setattr__`` — синхронный
+       метод, где ``asyncio.Lock`` принципиально неприменим).
     2. ``threading.RLock`` в StateManager (``_state_lock``) — рекурсивный.
        Один поток может захватить lock несколько раз.  Но ``asyncio.Lock``
        не рекурсивный — повторный ``await lock.acquire()`` в том же таск
        вызывает deadlock.
-    3. ``threading.RLock`` в BaseCorrelationManager (``_lock``) — защищает
-       таблицу pending futures.  ``asyncio.get_running_loop()`` вызывается
-       ПОД lock — если нет loop, поднимается RuntimeError ВНУТРИ lock.
-       finally-блок корректно освобождает lock, но исключение летит дальше.
+    3. ``BaseCorrelationManager`` БЕЗ lock: все обработчики выполняются
+       как задачи event loop, поэтому таблица pending futures потокобезопасна
+       сама по себе.  ``asyncio.get_running_loop()`` вызывается при
+       регистрации pending — без event loop будет RuntimeError.
     4. ``_bg_tasks`` (множество) НЕ потокобезопасно.  ``set.add`` и
        ``set.discard`` в CPython атомарны благодаря GIL, но ``create_task``
        добавляет в set без lock.  Если два потока одновременно вызовут
@@ -33,8 +34,8 @@ Kamio — асинхронный фреймворк, но внутри испо�
        ``_invoke`` вызывает sync callback напрямую без ``run_in_executor``.
     7. ``gmqtt.publish`` — синхронный метод, вызываемый в async-методе
        ``node.publish``.  Это блокирует event loop на время сетевой отправки.
-    8. ``asyncio.get_running_loop()`` под lock в correlation manager:
-       если вызван из потока без loop — RuntimeError внутри ``with self._lock``.
+    8. ``asyncio.get_running_loop()`` в correlation manager:
+       если вызван из потока без loop — RuntimeError при регистрации pending.
 
 ПРАВИЛЬНЫЙ ПОДХОД:
   - Использовать ``asyncio.Lock`` когда возможно (только в async-контексте).
@@ -64,16 +65,16 @@ logging.basicConfig(level=logging.CRITICAL)
 
 
 # =====================================================================
-# 1. threading.Lock в async-контексте (кэш эха _cinds_lock)
+# 1. Кэш эха lock-free (OrderedDict) в синхронном __setattr__
 # =====================================================================
 
 class LockDevice(Device):
-    """Устройство для тестирования threading.Lock в __setattr__."""
+    """Устройство для тестирования lock-free кэша эха в __setattr__."""
     power: bool = state(default=False, writable=True)
 
 
 async def test_threading_lock_in_async():
-    """_cinds_lock — threading.Lock, блокирует event loop при contention."""
+    """_echo_cache — OrderedDict без lock: O(1) операции неделимы в event loop."""
     dev = LockDevice()
 
     mock_node = MagicMock()
@@ -81,25 +82,27 @@ async def test_threading_lock_in_async():
     mock_node.publish = AsyncMock()
     dev.node = mock_node
 
-    # Утверждение: _cinds_lock — threading.Lock
-    # threading.Lock() создаёт экземпляр типа LockType
-    assert isinstance(dev._cinds_lock, type(threading.Lock())), (
-        "_cinds_lock должен быть threading.Lock"
-    )
+    # Утверждение: никакого lock у кэша нет — он и не нужен.
+    # remember/consume — O(1) словарные операции без await, а значит
+    # неделимы в рамках одного event loop.
+    assert not hasattr(dev, "_cinds_lock"), "Отдельный lock не нужен"
+    from kamio.device import EchoCache
 
-    # Утверждение: lock можно использовать из синхронного __setattr__
-    # (это ключевая причина выбора threading.Lock вместо asyncio.Lock)
-    dev.power = True  # __setattr__ — синхронный метод, использует lock
+    assert isinstance(dev._echo_cache, EchoCache)
+
+    # Утверждение: из синхронного __setattr__ кэш обновляется напрямую
+    dev.power = True  # __setattr__ — синхронный метод, remember() без lock
     assert dev.power is True
-    assert len(dev._own_state_cinds) == 1
+    assert len(dev._echo_cache) == 1
 
     # НЕПРАВИЛЬНО: пытаться использовать asyncio.Lock в __setattr__
     # asyncio.Lock требует await, а __setattr__ — синхронный метод.
     # Это вызвало бы TypeError или потребовало бы переписывания __setattr__
     # как async — что сломало бы синтаксис self.power = True.
 
-    # ПРАВИЛЬНО: threading.Lock для коротких операций в синхронных методах.
-    # Но помнить: при contention блокируется event loop.
+    # ПРАВИЛЬНО: O(1) структуры данных без lock для коротких операций
+    # в event-loop-контексте; threading.Lock — только там, где реально
+    # есть конкуренция потоков (например, StateManager._state_lock).
 
     await dev.cancel_all_tasks()
 
@@ -146,28 +149,24 @@ async def test_state_manager_rlock():
 # =====================================================================
 
 async def test_correlation_lock_and_get_running_loop():
-    """BaseCorrelationManager использует RLock и вызывает get_running_loop под lock.
+    """BaseCorrelationManager работает БЕЗ lock — только из event loop.
 
-    Если _wait_for_ack вызывается без event loop, RuntimeError поднимается
-    ВНУТРИ ``with self._lock``.  finally-блок освобождает lock, но
-    исключение распространяется.
+    Все обработчики вызываются как задачи event loop, поэтому таблица
+    pending futures не требует синхронизации.  get_running_loop()
+    вызывается при регистрации pending — без event loop будет RuntimeError.
     """
     cm = BaseCorrelationManager(max_pending=10)
 
-    # Утверждение: _lock — threading.RLock
-    assert isinstance(cm._lock, type(threading.RLock())), (
-        "_lock должен быть threading.RLock"
-    )
+    # Утверждение: никакого lock нет — все операции идут из event loop
+    assert not hasattr(cm, "_lock"), "correlation manager не использует lock"
 
-    # Утверждение: asyncio.get_running_loop() вызывается ПОД lock
-    # Проверяем это, вызвав _wait_for_ack в event loop (должно работать)
+    # Утверждение: в event loop get_running_loop работает, future создаётся
     publish_called = False
 
     async def fake_publish():
         nonlocal publish_called
         publish_called = True
 
-    # В event loop — get_running_loop работает, future создаётся
     async def fake_publish_coro():
         pass
 
@@ -198,8 +197,7 @@ async def test_correlation_lock_and_get_running_loop():
     )
 
     # НЕПРАВИЛЬНО: вызывать _wait_for_ack из потока без event loop.
-    # get_running_loop() поднимёт RuntimeError ВНУТРИ with self._lock.
-    # finally освободит lock, но исключение полетит дальше.
+    # get_running_loop() поднимёт RuntimeError — pending не регистрируется.
 
     # ПРАВИЛЬНО: всегда вызывать из event loop.  Если нужен вызов из
     # другого потока — использовать asyncio.run_coroutine_threadsafe.
@@ -517,7 +515,9 @@ async def test_right_way_offload_sync_work():
 
     # Утверждение: heartbeat тики были во время работы callback
     # (loop не был заблокирован, потому что to_thread освободил его)
-    tick_count = sum(1 for item in loop_was_free if item.startswith("tick_"))
+    tick_count = sum(
+        1 for item in loop_was_free if isinstance(item, str) and item.startswith("tick_")
+    )
     assert tick_count > 0, (
         "Heartbeat должен работать во время to_thread — loop свободен"
     )
@@ -564,9 +564,9 @@ async def main():
     print("=" * 70)
 
     tests = [
-        ("1. threading.Lock в async-контексте (_cinds_lock)", test_threading_lock_in_async),
+        ("1. Кэш эха lock-free (OrderedDict) в sync __setattr__", test_threading_lock_in_async),
         ("2. threading.RLock в StateManager (рекурсивный)", test_state_manager_rlock),
-        ("3. RLock в correlation + get_running_loop под lock", test_correlation_lock_and_get_running_loop),
+        ("3. Correlation без lock + get_running_loop", test_correlation_lock_and_get_running_loop),
         ("4. _bg_tasks set НЕ потокобезопасен", test_bg_tasks_not_thread_safe),
         ("5. Синхронные callbacks в EventBus блокируют loop", test_sync_callback_blocks_event_loop),
         ("6. Синхронные hooks в HooksManager блокируют loop", test_sync_hook_blocks_event_loop),

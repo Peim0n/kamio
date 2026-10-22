@@ -15,7 +15,7 @@
 7.  CustomNodeManager обращается к app._loop (приватный атрибут)
 8.  unregister_node: fire-and-forget stop задачи
 9.  route_message: итерирует _nodes без блокировки
-10. route_message: handle_message падает → всё равно "handled" = True
+10. route_message: handle_message падает → "handled" = False (ошибка через custom_node_error)
 11. register duplicate: ValueError
 12. unregister non-existent: warning, тихий return
 13. start_all: продолжает после ошибок
@@ -23,6 +23,7 @@
 
 Все примеры запускаются БЕЗ MQTT-брокера — используются моки и assertions.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -40,6 +41,7 @@ logging.basicConfig(level=logging.DEBUG, format="%(name)s | %(levelname)s | %(me
 # ---------------------------------------------------------------------------
 # Вспомогательные классы
 # ---------------------------------------------------------------------------
+
 
 class _MockMqttClient:
     """Мок MQTT-клиента для тестирования CustomNode без реального брокера."""
@@ -60,6 +62,7 @@ class _MockMqttClient:
     def publish(self, topic: str, payload: Any, qos: int = 0, retain: bool = False):
         if self._publish_delay > 0:
             import time
+
             time.sleep(self._publish_delay)  # НЕВЕРНО: блокирует event loop
         self.published.append((topic, payload, qos, retain))
 
@@ -76,6 +79,7 @@ class _MockApp:
 # ---------------------------------------------------------------------------
 # Тестовые CustomNode
 # ---------------------------------------------------------------------------
+
 
 class _GoodNode(CustomNode):
     """Корректный узел: вызывает super().stop()."""
@@ -170,6 +174,7 @@ class _FailingStopNode(CustomNode):
 # Тесты
 # ---------------------------------------------------------------------------
 
+
 class TestCustomNodeGotchas(unittest.IsolatedAsyncioTestCase):
     """Все подводные камни CustomNode и CustomNodeManager."""
 
@@ -206,12 +211,12 @@ class TestCustomNodeGotchas(unittest.IsolatedAsyncioTestCase):
         await bad.stop()
         # unsubscribe НЕ вызван — подписка утекла!
         self.assertEqual(
-            len(mqtt.unsubscribed), unsub_count_before,
-            "Bad node НЕ должен отписаться (super не вызван)"
+            len(mqtt.unsubscribed),
+            unsub_count_before,
+            "Bad node НЕ должен отписаться (super не вызван)",
         )
         self.assertEqual(
-            len(bad._subscriptions), 1,
-            "Подписки НЕ должны быть очищены (super не вызван)"
+            len(bad._subscriptions), 1, "Подписки НЕ должны быть очищены (super не вызван)"
         )
 
     # ======================================================================
@@ -314,11 +319,9 @@ class TestCustomNodeGotchas(unittest.IsolatedAsyncioTestCase):
         # НЕ совпадает: совершенно другой topic
         self.assertFalse(node.matches("home/kitchen"), "Другой topic")
 
-        # Крайний случай: пустой prefix совпадает со всем (с "/")
+        # Крайний случай: пустой prefix — catch-all, совпадает со всем
         node_empty = _GoodNode(mqtt, "///")  # rstrip → ""
-        self.assertTrue(node_empty.matches("anything"), "Пустой prefix + точное совпадение?")
-        # "" == "anything" → False, "anything".startswith("/") → False
-        # Но "" == "" → True
+        self.assertTrue(node_empty.matches("anything"), "Пустой prefix совпадает со всем")
         self.assertTrue(node_empty.matches(""), "Пустой prefix совпадает с пустым topic")
         self.assertTrue(node_empty.matches("/sub"), "Пустой prefix + /sub")
 
@@ -504,17 +507,19 @@ class TestCustomNodeGotchas(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handled2, "Должен быть handled=False для несовпадающего topic")
 
     # ======================================================================
-    # 10. route_message: handle_message raises → still "handled"
+    # 10. route_message: handle_message raises → handled=False
     # ======================================================================
     async def test_10_route_message_handle_raises_still_handled(self):
-        """route_message: handle_message падает → всё равно handled=True.
+        """route_message: handle_message падает → handled=False.
 
-        В route_message, handled = True устанавливается ДО try/except.
-        Если handle_message падает, ошибка логируется, событие
-        custom_node_error публикуется, но handled остаётся True.
+        В route_message, handled = True устанавливается ТОЛЬКО после
+        успешного await handle_message (внутри try).  Если handle_message
+        падает, ошибка логируется, событие custom_node_error публикуется,
+        и handled остаётся False.
 
-        НЕВЕРНО: рассчитывать, что handled=False при ошибке handle_message.
-        ПРАВИЛЬНО: handled=True означает «сообщение дошло до узла», а не «успешно обработано».
+        НЕВЕРНО: рассчитывать, что handled=True при ошибке handle_message.
+        ПРАВИЛЬНО: handled=False означает «ни один узел успешно не обработал» —
+        различайте «нет совпадения» и «упало» по событию custom_node_error.
         """
         app = _MockApp()
         app._loop = asyncio.get_running_loop()
@@ -528,14 +533,14 @@ class TestCustomNodeGotchas(unittest.IsolatedAsyncioTestCase):
         manager.register_node("crash", node)
         await node.start()
 
-        # handle_message падает, но handled = True
+        # handle_message падает → handled = False (успешной обработки не было)
         handled = await manager.route_message("crash/node/sub", b"payload")
-        self.assertTrue(
-            handled,
-            "handled=True даже если handle_message упал — handled устанавливается до try"
+        self.assertFalse(
+            handled, "handled=False когда handle_message упал — успешной обработки не было"
         )
 
-        # Событие custom_node_error опубликовано
+        # Событие custom_node_error опубликовано — им и отличаем падение
+        # от «нет совпадения».
         self.assertEqual(len(errors), 1, "custom_node_error должен быть опубликован")
         self.assertEqual(errors[0]["node_name"], "crash")
         self.assertEqual(errors[0]["phase"], "handle_message")
@@ -672,12 +677,13 @@ class TestCustomNodeGotchas(unittest.IsolatedAsyncioTestCase):
         # failing упал при stop() — _is_running НЕ сброшен (ошибка до строки)
         # Но это не мешает first остановиться
         self.assertTrue(
-            failing._is_running,
-            "failing _is_running не сброшен т.к. stop() упал до этой строки"
+            failing._is_running, "failing _is_running не сброшен т.к. stop() упал до этой строки"
         )
 
         # first остановлен (последний в обратном порядке, но failing не помешал)
-        self.assertFalse(first._is_running, "first должен быть остановлен несмотря на ошибку failing")
+        self.assertFalse(
+            first._is_running, "first должен быть остановлен несмотря на ошибку failing"
+        )
 
 
 if __name__ == "__main__":

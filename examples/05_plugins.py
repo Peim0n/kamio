@@ -901,14 +901,17 @@ async def demo_plugin_loaded_event(app: KamioApp):
     await app.load_plugin(PluginLoadedSubscriber)
     logger.info("PluginLoadedSubscriber загружен — слушает события plugin_loaded")
 
-    # Теперь загружаем другой плагин — подписчик должен среагировать
+    # Теперь загружаем другой плагин — подписчик должен среагировать.
+    # BackgroundTaskPlugin был выгружен в demo_task_through_context, поэтому
+    # повторная загрузка допустима. HealthCheckPlugin использовать нельзя —
+    # он уже загружен (load_plugin бросил бы ValueError: already loaded).
     logger.info("Загружаем другой плагин (должно сработать событие)...")
-    await app.load_plugin(HealthCheckPlugin, config={"check_interval": 30.0})
+    await app.load_plugin(BackgroundTaskPlugin)
     await asyncio.sleep(0.5)
 
     # Выгружаем — подписчик должен среагировать на plugin_unloaded
-    logger.info("Выгружаем health_check (должно сработать событие plugin_unloaded)...")
-    await app.unload_plugin("health_check")
+    logger.info("Выгружаем bg_task_plugin (должно сработать событие plugin_unloaded)...")
+    await app.unload_plugin("bg_task_plugin")
     await asyncio.sleep(0.5)
 
     # Выгружаем подписчика
