@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -276,16 +277,23 @@ class TestTaskManagerMixin:
         assert len(mgr._bg_tasks) == 0
 
     @pytest.mark.asyncio
-    async def test_cancel_all_tasks_logs_non_cancel_errors(self):
+    async def test_cancel_all_tasks_logs_non_cancel_errors(self, caplog):
         mgr = TaskManagerMixin("test.tm")
 
-        async def boom():
-            raise ValueError("boom")
+        async def bad():
+            # Fail with a real error while being cancelled so gather
+            # collects a non-CancelledError result.
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                raise RuntimeError("during cancel")
 
-        t = mgr.create_task(boom(), name="boom")
-        await asyncio.sleep(0.05)
-        await mgr.cancel_all_tasks()
+        t = mgr.create_task(bad(), name="bad")
+        await asyncio.sleep(0)  # let it start
+        with caplog.at_level(logging.ERROR, logger="test.tm"):
+            await mgr.cancel_all_tasks()
         assert t.done()
+        assert "Task finished with error" in caplog.text
 
 
 class TestTelemetryMixin:

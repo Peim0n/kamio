@@ -57,10 +57,12 @@ class InMemoryBroker:
         mid = self._next_mid
         self._next_mid += 1
         # Fire on_subscribe callback asynchronously so the caller can await
-        # the SUBACK via _kamio_wait_for_suback.
+        # the SUBACK via _kamio_wait_for_suback.  gmqtt wraps user callbacks
+        # with partial(cb, client), so the handler must be invoked WITHOUT
+        # the client argument: on_subscribe(mid, granted_qoses, properties).
         client = self._clients.get(client_id)
         if client and client.on_subscribe:
-            client.on_subscribe(client, mid, [0], {})
+            client.on_subscribe(mid, [0], {})
         return mid
 
     def unsubscribe(self, client_id: str, topic: str) -> int:
@@ -71,7 +73,7 @@ class InMemoryBroker:
         self._next_mid += 1
         client = self._clients.get(client_id)
         if client and client.on_unsubscribe:
-            client.on_unsubscribe(client, mid, {})
+            client.on_unsubscribe(mid, {})
         return mid
 
     def publish(self, source_id: str, topic: str, payload: Any, qos: int = 0) -> None:
@@ -95,10 +97,10 @@ class InMemoryBroker:
                         # stress tests rely on.
                         try:
                             loop = asyncio.get_running_loop()
-                            loop.call_soon(sub.on_message, sub, topic, payload, qos, {})
+                            loop.call_soon(sub.on_message, topic, payload, qos, {})
                         except RuntimeError:
                             # No running loop — call directly.
-                            sub.on_message(sub, topic, payload, qos, {})
+                            sub.on_message(topic, payload, qos, {})
 
     @staticmethod
     def _topic_matches(subscription: str, topic: str) -> bool:
@@ -145,13 +147,15 @@ class _BrokerClient(gmqtt.Client):
     ):
         self._connected_flag = True
         if self.on_connect:
-            self.on_connect(self, 0, 0, {})
+            # gmqtt invokes on_connect(session_present, result, properties);
+            # the client is already bound via partial(cb, client).
+            self.on_connect(0, 0, {})
 
     async def disconnect(self, reason_code=None, **kwargs):
         self._connected_flag = False
         self._broker.unregister(self._client_id)
         if self.on_disconnect:
-            self.on_disconnect(self, None)
+            self.on_disconnect(None, None)
 
     def publish(self, topic, payload=None, qos=0, retain=False, **kwargs):
         self._broker.publish(self._client_id, topic, payload, qos)
@@ -175,7 +179,7 @@ class _BrokerClient(gmqtt.Client):
 
     def simulate_message(self, topic, payload):
         if self.on_message:
-            self.on_message(self, topic, payload, 0, {})
+            self.on_message(topic, payload, 0, {})
 
 
 class MockGmqttClient(_BrokerClient):
@@ -202,6 +206,35 @@ class MockGmqttClient(_BrokerClient):
     def unsubscribe(self, topic, **kwargs):  # type: ignore[override]
         self.unsubscribed.append((topic,))
         return super().unsubscribe(topic)
+
+
+@pytest.fixture(autouse=True)
+async def _fail_on_callback_exceptions():
+    """Fail the test if an MQTT callback raises inside the event loop.
+
+    gmqtt wraps user callbacks with ``partial(cb, client)``; invoking them
+    with a wrong signature previously produced TypeErrors that only surfaced
+    as logged loop errors, letting tests pass while callbacks were broken.
+    """
+    loop = asyncio.get_running_loop()
+    contexts: list = []
+    previous = loop.get_exception_handler()
+
+    def handler(loop, context):
+        contexts.append(context)
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+    try:
+        yield
+    finally:
+        loop.set_exception_handler(previous)
+        assert not contexts, (
+            f"{len(contexts)} asyncio exception(s) during test: "
+            + "; ".join(
+                repr(c.get("exception") or c.get("message")) for c in contexts
+            )
+        )
 
 
 @pytest.fixture(autouse=True)

@@ -61,6 +61,9 @@ class MqttDispatchMixin:
             reason = getattr(rc, "name", rc)
             logger.info(f"MQTT connected (rc={reason})")
             conn = self._mqtt_conn
+            if conn is not None:
+                # Successful connect — reset exponential reconnect backoff.
+                conn.note_connected()
             self._publish_event_threadsafe(
                 "mqtt_connected",
                 {
@@ -81,6 +84,10 @@ class MqttDispatchMixin:
         try:
             reason = getattr(packet, "reason_code", packet)
             logger.warning(f"MQTT disconnected (rc={reason})")
+            conn = self._mqtt_conn
+            if conn is not None:
+                # Exponential backoff for the next reconnect attempt.
+                conn.note_disconnected()
             self._publish_event_threadsafe("mqtt_disconnected", {"rc": reason})
         except Exception as e:
             logger.exception(f"Error in _on_mqtt_disconnect: {e}")

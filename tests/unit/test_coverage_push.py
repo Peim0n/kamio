@@ -599,6 +599,40 @@ def test_mqtt_connection_default_port():
     assert conn.port == 1883
 
 
+def test_mqtt_connection_reconnect_uses_public_api():
+    """Reconnect settings must go through gmqtt's public config API (SCAN-01)."""
+    from kamio.core.mqtt_connection import MqttConnection
+
+    conn = MqttConnection(
+        broker_uri="mqtt://localhost:1883",
+        client_id="rc-cfg",
+        reconnect_min_delay=2.5,
+    )
+    assert conn.client.reconnect_delay == 2.5
+    # -1 = unlimited retries; 0 would disable reconnection entirely.
+    assert conn.client.reconnect_retries == -1
+
+
+def test_mqtt_connection_reconnect_backoff():
+    """Disconnect doubles the reconnect delay up to max; connect resets it."""
+    from kamio.core.mqtt_connection import MqttConnection
+
+    conn = MqttConnection(
+        broker_uri="mqtt://localhost:1883",
+        client_id="rc-backoff",
+        reconnect_min_delay=1.0,
+        reconnect_max_delay=5.0,
+    )
+    conn.note_disconnected()
+    assert conn.client.reconnect_delay == 2.0
+    conn.note_disconnected()
+    assert conn.client.reconnect_delay == 4.0
+    conn.note_disconnected()
+    assert conn.client.reconnect_delay == 5.0  # capped at reconnect_max_delay
+    conn.note_connected()
+    assert conn.client.reconnect_delay == 1.0
+
+
 @pytest.mark.asyncio
 async def test_mqtt_connection_wait_for_suback_early():
     from kamio.core.mqtt_connection import MqttConnection

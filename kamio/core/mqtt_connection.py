@@ -20,7 +20,9 @@ class MqttConnection:
     making KamioApp smaller and easier to test.
 
     Features:
-        - automatic reconnect with exponential backoff (via gmqtt built-in)
+        - automatic reconnect with exponential backoff (delay doubles on each
+          disconnect via :meth:`note_disconnected`, resets via
+          :meth:`note_connected`; retries are driven by gmqtt)
         - optional TLS configuration (cafile, certfile, keyfile, etc.)
         - connection state callbacks
         - SUBACK/UNSUBACK correlation so nodes can await broker confirmation
@@ -65,9 +67,12 @@ class MqttConnection:
         # thread and no GIL contention when publishing/subscribing in bulk.
         self.client = gmqtt.Client(self.client_id, clean_session=clean_session)
 
-        # Configure gmqtt's built-in reconnect with exponential backoff.
-        self.client._reconnect_delay = reconnect_min_delay
-        self.client._reconnect_retries = 0  # 0 = unlimited retries
+        # Configure reconnect through gmqtt's public API.  -1 means retry
+        # forever (0 disables reconnection entirely).  The delay grows
+        # exponentially via note_disconnected()/note_connected() — KamioApp
+        # calls them from its MQTT callbacks.
+        self.client.reconnect_delay = reconnect_min_delay
+        self.client.reconnect_retries = -1
 
         # Track SUBACK/UNSUBACK so nodes can wait for the broker to confirm
         # a subscription/unsubscription before moving on.
@@ -164,6 +169,19 @@ class MqttConnection:
         ctx.verify_mode = effective_reqs  # type: ignore[assignment]
         if effective_check:
             ctx.check_hostname = True
+
+    # ------------------------------------------------------------------
+    # Reconnect backoff
+    # ------------------------------------------------------------------
+    def note_connected(self) -> None:
+        """Reset the reconnect delay after a successful (re)connect."""
+        self.client.reconnect_delay = self._reconnect_min_delay
+
+    def note_disconnected(self) -> None:
+        """Double the reconnect delay, capped at ``reconnect_max_delay``."""
+        self.client.reconnect_delay = min(
+            self.client.reconnect_delay * 2, self._reconnect_max_delay
+        )
 
     # ------------------------------------------------------------------
     # gmqtt callbacks
