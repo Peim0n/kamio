@@ -20,12 +20,15 @@
     - Взаимодействие с другими устройствами через app.devices
     - Включение/выключение правил во время выполнения
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
+
+from _bounded import run_bounded
 
 from kamio import KamioApp, Device, RuleEvent, command, rule, state, telemetry
 
@@ -39,6 +42,7 @@ logger = logging.getLogger("rules_demo")
 # =====================================================================
 # Устройства
 # =====================================================================
+
 
 class SmartLight(Device):
     """Умная лампа с питанием, яркостью и режимом."""
@@ -58,8 +62,10 @@ class SmartLight(Device):
         """
         is_on = event.get("power", False)
         device_id = self.node.device_id if self.node else "?"
-        logger.info(f"💡 [правило устройства] Лампа '{device_id}' "
-                    f"{'ВКЛ' if is_on else 'ВЫКЛ'} (event.data={event.data})")
+        logger.info(
+            f"💡 [правило устройства] Лампа '{device_id}' "
+            f"{'ВКЛ' if is_on else 'ВЫКЛ'} (event.data={event.data})"
+        )
 
     # --- Правило на уровне устройства: реакция на несколько полей ---
     @rule(fields=["brightness", "mode"])
@@ -74,26 +80,32 @@ class SmartLight(Device):
 
         if "brightness" in event.data:
             new_brightness = event.get("brightness")
-            logger.info(f"💡 [правило устройства] Яркость '{device_id}' "
-                        f"изменилась на {new_brightness}")
+            logger.info(
+                f"💡 [правило устройства] Яркость '{device_id}' " f"изменилась на {new_brightness}"
+            )
 
         if "mode" in event.data:
             new_mode = event.get("mode")
-            logger.info(f"💡 [правило устройства] Режим '{device_id}' "
-                        f"изменился на '{new_mode}'")
+            logger.info(
+                f"💡 [правило устройства] Режим '{device_id}' " f"изменился на '{new_mode}'"
+            )
 
             # Реагируем на режим "night" — приглушаем яркость
             if new_mode == "night":
                 self.brightness = 10
-                logger.info(f"🌙 [правило устройства] Ночной режим: "
-                            f"яркость снижена до {self.brightness}")
+                logger.info(
+                    f"🌙 [правило устройства] Ночной режим: "
+                    f"яркость снижена до {self.brightness}"
+                )
 
 
 class MotionSensor(Device):
     """Датчик движения с телеметрией и событием."""
 
     motion: bool = state(default=False, writable=False, description="Движение обнаружено")
-    battery_level: float = telemetry(default=100.0, unit="%", freq="30s", description="Заряд батареи")
+    battery_level: float = telemetry(
+        default=100.0, unit="%", freq="30s", description="Заряд батареи"
+    )
     last_motion_time: Optional[str] = state(default=None, writable=False)
 
     @command
@@ -150,16 +162,16 @@ def setup_app_rules(app: KamioApp):
         """
         motion_detected = event.get("motion", False)
         sensor_id = event.device_id
-        logger.info(f"🚶 [правило приложения] Датчик '{sensor_id}' "
-                    f"motion={motion_detected}")
+        logger.info(f"🚶 [правило приложения] Датчик '{sensor_id}' " f"motion={motion_detected}")
 
         if motion_detected:
             # Ищем все лампы и включаем их
             for dev_id, device in app.devices.items():
                 if isinstance(device, SmartLight) and not device.power:
                     await device.handle_state({"power": True})
-                    logger.info(f"💡 [правило приложения] "
-                                f"Лампа '{dev_id}' включена по движению")
+                    logger.info(
+                        f"💡 [правило приложения] " f"Лампа '{dev_id}' включена по движению"
+                    )
 
     # --- Периодическое правило: проверка низкого заряда батареи ---
     @app.rule(interval=10, description="Проверка заряда батарей каждые 10 сек")
@@ -211,15 +223,13 @@ def setup_app_rules(app: KamioApp):
         при любом обновлении состояния устройства данного класса.
         """
         if event.data:
-            logger.info(
-                f"📝 [мониторинг] Лампа '{event.device_id}' "
-                f"изменила: {event.data}"
-            )
+            logger.info(f"📝 [мониторинг] Лампа '{event.device_id}' " f"изменила: {event.data}")
 
 
 # =====================================================================
 # Демонстрация включения/выключения правил
 # =====================================================================
+
 
 async def demo_rule_enable_disable(app: KamioApp):
     """
@@ -270,6 +280,7 @@ async def demo_rule_enable_disable(app: KamioApp):
 # =====================================================================
 # Основная функция
 # =====================================================================
+
 
 async def main():
     logger.info("=== Демонстрация правил автоматизации kamio ===\n")
@@ -340,6 +351,7 @@ async def main():
 # Это позволяет писать максимально лаконичные правила, когда
 # доступ к event или app не нужен.
 
+
 async def demo_zero_param_rule(app: KamioApp):
     """Показывает правило без параметров."""
     logger.info("=== Демонстрация: правило с 0 параметров ===")
@@ -365,6 +377,7 @@ async def demo_zero_param_rule(app: KamioApp):
 # Функция с 1 параметром получает только RuleEvent.
 # Доступ к app отсутствует — подходит для правил, которым нужны
 # только данные события, но не глобальное состояние приложения.
+
 
 async def demo_one_param_rule(app: KamioApp):
     """Показывает правило с одним параметром (event)."""
@@ -401,6 +414,7 @@ async def demo_one_param_rule(app: KamioApp):
 # Функция с 2 параметрами получает (RuleEvent, KamioApp).
 # Это стандартная сигнатура, используемая в большинстве примеров.
 # Доступ к app позволяет взаимодействовать с другими устройствами.
+
 
 async def demo_two_param_rule(app: KamioApp):
     """Показывает правило с двумя параметрами (event, app)."""
@@ -442,6 +456,7 @@ async def demo_two_param_rule(app: KamioApp):
 # немедленно при старте RuleEngine, а затем — каждые interval секунд.
 # Без run_on_start первое выполнение происходит через interval секунд.
 
+
 async def demo_run_on_start(app: KamioApp):
     """Показывает немедленное выполнение правила при старте."""
     logger.info("=== Демонстрация: run_on_start с интервалом ===")
@@ -460,6 +475,7 @@ async def demo_run_on_start(app: KamioApp):
         С run_on_start=True — немедленно при запуске RuleEngine.
         """
         from datetime import datetime
+
         execution_times.append(datetime.now())
         logger.info(f"  [run_on_start] Выполнение #{len(execution_times)}")
 
@@ -481,6 +497,7 @@ async def demo_run_on_start(app: KamioApp):
 # Для interval-правил: цикл продолжает работать, но пропускает
 # выполнение (continue при not rule.enabled).
 # Для event-правил: правило просто не вызывается.
+
 
 async def demo_disable_during_execution(app: KamioApp):
     """Показывает отключение правила во время выполнения."""
@@ -540,6 +557,7 @@ async def demo_disable_during_execution(app: KamioApp):
 # Правило на промежуточный базовый класс срабатывает для всех
 # его подклассов.
 
+
 async def demo_base_class_rule(app: KamioApp):
     """Показывает правило на базовый класс."""
     logger.info("=== Демонстрация: правило на базовый класс устройства ===")
@@ -577,6 +595,7 @@ async def demo_base_class_rule(app: KamioApp):
 # RuleEvent.get(key, default) — удобный метод доступа.
 # RuleEvent.kind — "event" (устройство) или "interval" (таймер).
 # RuleEvent.device_id — ID устройства или None для interval-правил.
+
 
 async def demo_rule_event_data(app: KamioApp):
     """Показывает доступ к данным в RuleEvent."""
@@ -616,6 +635,7 @@ async def demo_rule_event_data(app: KamioApp):
 # @app.rule(fields=["field1", "field2"]) срабатывает, если в
 # обновлении присутствует ХОТЯ БЫ ОДНО из перечисленных полей.
 # Проверяйте event.data, чтобы понять, какое именно поле изменилось.
+
 
 async def demo_multi_field_rule(app: KamioApp):
     """Показывает правило, реагирующее на несколько полей."""
@@ -673,6 +693,7 @@ async def demo_multi_field_rule(app: KamioApp):
 # =====================================================================
 # Расширенная главная функция с дополнительными демонстрациями
 # =====================================================================
+
 
 async def extended_main():
     """Запускает базовую демонстрацию плюс все дополнительные секции."""
@@ -733,4 +754,4 @@ async def extended_main():
 
 
 if __name__ == "__main__":
-    asyncio.run(extended_main())
+    run_bounded(extended_main())

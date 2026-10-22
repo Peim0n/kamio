@@ -80,3 +80,87 @@ jobs:
 
       - name: Run stress tests
         run: pytest tests/stress/ -q -m "stress"
+
+  compat:
+    # gmqtt compatibility matrix: minimum and maximum versions allowed by
+    # the pyproject pin (gmqtt>=0.8,<0.9) across boundary Python versions.
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+        gmqtt: ["gmqtt==0.8.0", "gmqtt<0.9"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies (${{ matrix.gmqtt }})
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+          pip install "${{ matrix.gmqtt }}"
+          pip show gmqtt | grep -i "^version"
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -q
+
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+
+      - name: Start Mosquitto broker
+        run: |
+          docker run -d --name mosquitto -p 1883:1883 \
+            eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
+          for i in $(seq 1 30); do
+            if timeout 2 bash -c "</dev/tcp/localhost/1883" 2>/dev/null; then
+              echo "mosquitto is up"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run all examples
+        # KAMIO_EXAMPLE_MAX_DURATION caps the long-running demos
+        # (04, 06, 08, 09, 14) via examples/_bounded.py:run_bounded —
+        # they exit 0 once the cap is reached.  The hard `timeout` is a
+        # safety net for demos that ignore the cap.  A run fails on a
+        # non-zero exit code or a [FAIL] marker in the output.
+        env:
+          KAMIO_EXAMPLE_MAX_DURATION: "30"
+          PYTHONIOENCODING: utf-8
+        run: |
+          failed=0
+          for f in examples/*.py; do
+            case "$f" in *_bounded.py) continue;; esac
+            echo "=== $f ==="
+            if ! timeout 90 python "$f" > /tmp/example_output.log 2>&1; then
+              echo "::error file=$f::example exited with non-zero status"
+              tail -50 /tmp/example_output.log
+              failed=1
+              continue
+            fi
+            if grep -q "\[FAIL\]" /tmp/example_output.log; then
+              echo "::error file=$f::output contains [FAIL]"
+              tail -50 /tmp/example_output.log
+              failed=1
+              continue
+            fi
+            tail -3 /tmp/example_output.log
+          done
+          exit $failed

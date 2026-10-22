@@ -21,6 +21,7 @@
     - Тестирование echo suppression
     - Тестирование reinitialize и shutdown
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,8 +45,10 @@ logger = logging.getLogger("test_patterns")
 # Тестируемые устройства
 # =====================================================================
 
+
 class TestLight(Device):
     """Лампа для тестирования."""
+
     power: bool = state(default=False, writable=True)
     brightness: int = state(default=100, min=0, max=255, writable=True)
     mode: str = state(default="auto", choices=("auto", "manual", "off"), writable=True)
@@ -66,6 +69,7 @@ class TestLight(Device):
 
 class TestSensor(Device):
     """Датчик с телеметрией."""
+
     value: float = telemetry(default=0.0, unit="°C", freq="1s", min=-50, max=150)
 
     async def handle_telemetry_update(self, field_names: list[str]) -> Optional[dict[str, Any]]:
@@ -81,6 +85,7 @@ class TestSensor(Device):
 # =====================================================================
 # 1. Тестирование валидации устройства
 # =====================================================================
+
 
 def test_validation():
     """Тестирование _validate_value напрямую.
@@ -132,8 +137,7 @@ def test_validation():
     except ValueError:
         assert False, "'42' должно проходить min/max через коэрсию"
 
-    # Строка, не конвертируемая в число: min/max пропускается.
-    # У brightness НЕТ choices, поэтому 'abc' проходит без ошибки.
+    # Строка, не конвертируемая в число: отклоняется коэрсией типа.
     # Демонстрируем на mode (у которого есть choices):
     try:
         light._validate_value(f_mode, "abc")
@@ -141,14 +145,21 @@ def test_validation():
     except ValueError:
         logger.info("  ✓ Строка 'abc' отклонена для mode (choices валидация)")
 
-    # А для brightness (без choices) 'abc' проходит:
-    result = light._validate_value(f_brightness, "abc")
-    assert result == "abc"
-    logger.info("  ✓ Строка 'abc' проходит для brightness (нет choices, min/max skip)")
+    # И для brightness 'abc' отклоняется — типизация требует int,
+    # а int('abc') невозможен:
+    try:
+        light._validate_value(f_brightness, "abc")
+        assert False, "Должно быть ValueError: 'abc' не коэрсится в int"
+    except ValueError:
+        logger.info("  ✓ Строка 'abc' отклонена для brightness (нековертируемо в int)")
 
-    # Bool исключён из numeric coercion (isinstance(bool, int) True, но проверяется явно)
-    light._validate_value(f_brightness, True)
-    logger.info("  ✓ Bool True проходит валидацию (не treated as 1.0 для min/max)")
+    # Bool отклоняется для не-bool полей (isinstance(True, int) == True,
+    # но семантически bool — не число):
+    try:
+        light._validate_value(f_brightness, True)
+        assert False, "Должно быть ValueError: bool не число для int-поля"
+    except ValueError:
+        logger.info("  ✓ Bool True отклонён для brightness (bool ≠ int для полей)")
 
     logger.info("  Тест 1 пройден\n")
 
@@ -156,6 +167,7 @@ def test_validation():
 # =====================================================================
 # 2. Тестирование handle_state
 # =====================================================================
+
 
 async def test_handle_state():
     """Тестирование handle_state напрямую."""
@@ -196,6 +208,7 @@ async def test_handle_state():
 # 3. Тестирование handle_command
 # =====================================================================
 
+
 async def test_handle_command():
     """Тестирование handle_command напрямую."""
     logger.info("=== Тест 3: handle_command ===")
@@ -231,6 +244,7 @@ async def test_handle_command():
 # =====================================================================
 # 4. Тестирование правил
 # =====================================================================
+
 
 async def test_rules():
     """Тестирование правил с mock RuleEvent."""
@@ -300,6 +314,7 @@ async def test_rules():
 # 5. Тестирование телеметрии
 # =====================================================================
 
+
 async def test_telemetry():
     """Тестирование handle_telemetry_update."""
     logger.info("=== Тест 5: Телеметрия ===")
@@ -340,6 +355,7 @@ async def test_telemetry():
 # =====================================================================
 # 6. Тестирование с MockHardwareDriver
 # =====================================================================
+
 
 async def test_mock_driver():
     """Тестирование с MockHardwareDriver."""
@@ -382,6 +398,7 @@ async def test_mock_driver():
 # =====================================================================
 # 7. Тестирование Event Bus
 # =====================================================================
+
 
 async def test_event_bus():
     """Тестирование EventBus."""
@@ -448,6 +465,7 @@ async def test_event_bus():
 # 8. Тестирование Envelope
 # =====================================================================
 
+
 def test_envelope():
     """Тестирование Envelope сериализации."""
     logger.info("=== Тест 8: Envelope ===")
@@ -500,7 +518,10 @@ def test_envelope():
         (lambda: Envelope.state("d1", {"power": True}), EnvelopeType.DEVICE_STATE),
         (lambda: Envelope.state_ack("d1", "s1", {"ok": True}, "cind123"), EnvelopeType.STATE_ACK),
         (lambda: Envelope.event("d1", "motion", {"ts": 123}), EnvelopeType.DEVICE_EVENT),
-        (lambda: Envelope.command_ack("d1", "s1", {"ok": True}, "cind123"), EnvelopeType.COMMAND_ACK),
+        (
+            lambda: Envelope.command_ack("d1", "s1", {"ok": True}, "cind123"),
+            EnvelopeType.COMMAND_ACK,
+        ),
         (lambda: Envelope.keepalive("d1"), EnvelopeType.KEEPALIVE),
     ]:
         e = factory()
@@ -514,6 +535,7 @@ def test_envelope():
 # 9. Тестирование Config
 # =====================================================================
 
+
 def test_config():
     """Тестирование Config."""
     logger.info("=== Тест 9: Config ===")
@@ -522,13 +544,16 @@ def test_config():
     import json
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump({
-            "mqtt_broker": "mqtt://test:1883",
-            "log_level": "DEBUG",
-            "telemetry_min_freq": "0.5",
-            "custom_setting": "hello",
-            "nested": {"key": "value", "number": 42},
-        }, f)
+        json.dump(
+            {
+                "mqtt_broker": "mqtt://test:1883",
+                "log_level": "DEBUG",
+                "telemetry_min_freq": "0.5",
+                "custom_setting": "hello",
+                "nested": {"key": "value", "number": 42},
+            },
+            f,
+        )
         config_path = f.name
 
     try:
@@ -588,6 +613,7 @@ def test_config():
 # 10. Тестирование kwargs в __init__
 # =====================================================================
 
+
 def test_kwargs():
     """Тестирование применения kwargs в Device.__init__."""
     logger.info("=== Тест 10: kwargs в __init__ ===")
@@ -597,6 +623,7 @@ def test_kwargs():
 
     # DEBUG: проверить что фактически установлено
     import os as _os
+
     _dbg_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "debug29.txt")
     with open(_dbg_path, "w", encoding="utf-8") as _f:
         _f.write(f"Kamio_FIELDS keys = {list(TestLight.Kamio_FIELDS.keys())}\n")
@@ -608,7 +635,9 @@ def test_kwargs():
     assert light.brightness == 50
     assert light.mode == "manual"
     assert light.location == "kitchen"
-    logger.info(f"  ✓ kwargs применены: power={light.power}, brightness={light.brightness}, mode={light.mode}, location={light.location}")
+    logger.info(
+        f"  ✓ kwargs применены: power={light.power}, brightness={light.brightness}, mode={light.mode}, location={light.location}"
+    )
 
     # kwargs bypass validation (известный подводный камень!)
     # Можно установить невалидное значение через kwargs
@@ -627,6 +656,7 @@ def test_kwargs():
 # =====================================================================
 # 11. Pytest fixtures (демонстрация паттерна)
 # =====================================================================
+
 
 def test_pytest_fixtures_pattern():
     """Демонстрация паттерна pytest fixtures (без запуска pytest)."""
@@ -670,26 +700,27 @@ def test_pytest_fixtures_pattern():
 # 12. Тестирование echo suppression
 # =====================================================================
 
+
 def test_echo_suppression():
     """Тестирование echo suppression cache."""
     logger.info("=== Тест 12: Echo suppression ===")
 
     light = TestLight()
 
-    # _own_state_cinds существует, но пуст (нет node, нет публикаций)
-    assert hasattr(light, "_own_state_cinds")
-    assert len(light._own_state_cinds) == 0
-    logger.info("  ✓ _own_state_cinds существует и пуст")
+    # _echo_cache (EchoCache) существует, но пуст (нет node, нет публикаций)
+    assert hasattr(light, "_echo_cache")
+    assert len(light._echo_cache) == 0
+    logger.info("  ✓ _echo_cache существует и пуст")
 
     # _set_state bypass echo suppression
     light._set_state(power=True)
     assert light.power == True
-    assert len(light._own_state_cinds) == 0  # не добавляется в cache
+    assert len(light._echo_cache) == 0  # не добавляется в cache
     logger.info("  ✓ _set_state bypass echo suppression")
 
-    # Cache limit = 4096 (атрибут _own_state_cinds_limit)
-    assert light._own_state_cinds_limit == 4096
-    logger.info(f"  ✓ Cache limit = {light._own_state_cinds_limit}")
+    # Cache limit = 4096 (EchoCache._limit)
+    assert light._echo_cache._limit == 4096
+    logger.info(f"  ✓ Cache limit = {light._echo_cache._limit}")
 
     logger.info("  Тест 12 пройден\n")
 
@@ -697,6 +728,7 @@ def test_echo_suppression():
 # =====================================================================
 # 13. Тестирование DeviceMeta
 # =====================================================================
+
 
 def test_device_meta():
     """Тестирование DeviceMeta collection."""
@@ -736,6 +768,7 @@ def test_device_meta():
 # 14. Тестирование get_full_snapshot
 # =====================================================================
 
+
 def test_snapshots():
     """Тестирование снимков состояния."""
     logger.info("=== Тест 14: Snapshots ===")
@@ -766,6 +799,7 @@ def test_snapshots():
 # =====================================================================
 # 15. Главный цикл
 # =====================================================================
+
 
 async def main():
     logger.info("Запуск всех тестов\n")

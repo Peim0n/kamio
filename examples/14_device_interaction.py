@@ -17,11 +17,14 @@
 Предварительно запустите MQTT-брокер на localhost:1883
 (например, ``docker run -p 1883:1883 eclipse-mosquitto``).
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Any, Dict
+
+from _bounded import run_bounded
 
 from kamio import KamioApp, Device, RuleEvent, command, rule, state
 
@@ -37,6 +40,7 @@ logger = logging.getLogger("interaction_demo")
 # Устройство A: Умная лампа (получатель команд)
 # =====================================================================
 
+
 class SmartLight(Device):
     """Умная лампа — получает команды от контроллера.
 
@@ -45,9 +49,7 @@ class SmartLight(Device):
     """
 
     power: bool = state(default=False, writable=True, description="Питание")
-    brightness: int = state(
-        default=100, min=0, max=255, writable=True, description="Яркость"
-    )
+    brightness: int = state(default=100, min=0, max=255, writable=True, description="Яркость")
 
     @command
     async def toggle(self):
@@ -67,6 +69,7 @@ class SmartLight(Device):
 # =====================================================================
 # Устройство B: Датчик присутствия (источник событий)
 # =====================================================================
+
 
 class PresenceSensor(Device):
     """Датчик присутствия — меняет состояние, на которое реагирует контроллер."""
@@ -95,6 +98,7 @@ class PresenceSensor(Device):
 # =====================================================================
 # Устройство C: Контроллер (взаимодействует с A и B)
 # =====================================================================
+
 
 class LightController(Device):
     """Контроллер: включает свет при обнаружении движения.
@@ -137,10 +141,7 @@ class LightController(Device):
 
     def _is_target_sensor_presence(self, data: Dict[str, Any]) -> bool:
         """Фильтр: только изменения поля presence на целевом датчике."""
-        return (
-            data.get("device_id") == self.target_sensor_id
-            and data.get("field") == "presence"
-        )
+        return data.get("device_id") == self.target_sensor_id and data.get("field") == "presence"
 
     async def _on_sensor_state_changed(self, data: Dict[str, Any]):
         """Обработчик изменения состояния датчика присутствия.
@@ -169,7 +170,9 @@ class LightController(Device):
                     timeout=5.0,
                 )
                 self.last_action = "sent_toggle"
-                logger.info(f"  [Controller] ACK получен: {ack.data if hasattr(ack, 'data') else ack}")
+                logger.info(
+                    f"  [Controller] ACK получен: {ack.data if hasattr(ack, 'data') else ack}"
+                )
 
             except asyncio.TimeoutError:
                 self.last_action = "timeout"
@@ -199,7 +202,9 @@ class LightController(Device):
                 params={"value": value},
                 timeout=5.0,
             )
-            logger.info(f"  [Controller] brightness ACK: {ack.data if hasattr(ack, 'data') else ack}")
+            logger.info(
+                f"  [Controller] brightness ACK: {ack.data if hasattr(ack, 'data') else ack}"
+            )
             return {"status": "ok", "value": value}
         except Exception as e:
             logger.error(f"  [Controller] Ошибка: {e}")
@@ -209,6 +214,7 @@ class LightController(Device):
 # =====================================================================
 # Устройство D: Монитор (читает снимки и синхронизирует состояние)
 # =====================================================================
+
 
 class StateMonitor(Device):
     """Монитор: периодически читает снимки других устройств.
@@ -251,7 +257,9 @@ class StateMonitor(Device):
             # Полезно когда состояние изменилось локально и нужно уведомить
             # других подписчиков MQTT (например, Home Assistant).
             await target.request_state_sync()
-            logger.info(f"  [Monitor] request_state_sync() отправлен для {self.monitored_device_id}")
+            logger.info(
+                f"  [Monitor] request_state_sync() отправлен для {self.monitored_device_id}"
+            )
 
             # --- request_full_sync() ---
             # Публикует ВСЕ поля (state + config + telemetry) в MQTT.
@@ -262,6 +270,7 @@ class StateMonitor(Device):
 # =====================================================================
 # Устройство E: Custom MQTT subscriber (register_async_callback)
 # =====================================================================
+
 
 class CustomTopicListener(Device):
     """Устройство, подписанное на произвольный MQTT-топик.
@@ -318,6 +327,7 @@ class CustomTopicListener(Device):
 # App-level rule: cross-device реакция
 # =====================================================================
 
+
 async def on_presence_change(event: RuleEvent, app: KamioApp):
     """App-level правило: реакция на изменение PresenceSensor.presence.
 
@@ -336,6 +346,7 @@ async def on_presence_change(event: RuleEvent, app: KamioApp):
 # =====================================================================
 # Главный цикл
 # =====================================================================
+
 
 async def main():
     app = KamioApp(mqtt_broker="mqtt://localhost:1883", client_id="interaction_demo")
@@ -458,7 +469,9 @@ async def main():
     logger.info("Изменяем состояние лампы — listener должен получить сообщение...")
     await light.handle_state({"brightness": 77})
     await asyncio.sleep(1)
-    logger.info(f"Listener message_count={listener.message_count}, last_payload={listener.last_payload[:80]}...")
+    logger.info(
+        f"Listener message_count={listener.message_count}, last_payload={listener.last_payload[:80]}..."
+    )
 
     # --- Демонстрация: прямой доступ через app.devices ---
     logger.info("=== Прямой доступ через app.devices ===")
@@ -501,6 +514,7 @@ async def main():
 # =====================================================================
 # Демонстрация: send_command с timeout — обработка таймаута
 # =====================================================================
+
 
 async def demo_send_command_timeout(controller):
     """Показывает обработку таймаута при send_command.
@@ -549,6 +563,7 @@ async def demo_send_command_timeout(controller):
 # Демонстрация: send_command с ошибкой — сценарий ошибки
 # =====================================================================
 
+
 async def demo_send_command_error(controller, light):
     """Показывает сценарий, когда целевое устройство вызывает ошибку.
 
@@ -593,6 +608,7 @@ async def demo_send_command_error(controller, light):
 # Демонстрация: cross-device rule подробно
 # =====================================================================
 
+
 async def demo_cross_device_rule_detailed(app, sensor, light, controller):
     """Подробно показывает cross-device взаимодействие.
 
@@ -620,7 +636,9 @@ async def demo_cross_device_rule_detailed(app, sensor, light, controller):
 
     # Шаг 2: EventBus доставляет событие device_state_changed контроллеру
     logger.info("Шаг 2: EventBus доставляет событие контроллеру...")
-    logger.info(f"  (filter_fn проверяет device_id={controller.target_sensor_id!r} и field='presence')")
+    logger.info(
+        f"  (filter_fn проверяет device_id={controller.target_sensor_id!r} и field='presence')"
+    )
 
     # Шаг 3: Контроллер вызывает send_command на лампу
     logger.info("Шаг 3: Контроллер вызывает send_command('living_light', 'toggle')...")
@@ -642,6 +660,7 @@ async def demo_cross_device_rule_detailed(app, sensor, light, controller):
 # =====================================================================
 # Демонстрация: app.devices итерация — перебор всех устройств
 # =====================================================================
+
 
 def demo_devices_iteration(app):
     """Показывает итерацию по app.devices и доступ к свойствам устройств.
@@ -685,6 +704,7 @@ def demo_devices_iteration(app):
 # Демонстрация: unregister_async_callback — удаление callback
 # =====================================================================
 
+
 async def demo_unregister_async_callback(app, listener):
     """Показывает удаление async callback через unregister_async_callback.
 
@@ -721,6 +741,7 @@ async def demo_unregister_async_callback(app, listener):
 # =====================================================================
 # Демонстрация: reinitialize с driver — реинициализация устройства
 # =====================================================================
+
 
 async def demo_reinitialize_with_driver(app, sensor):
     """Подробно показывает reinitialize() для устройства с драйвером.
@@ -788,4 +809,4 @@ async def demo_reinitialize_with_driver(app, sensor):
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_bounded(main())

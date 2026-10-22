@@ -31,8 +31,8 @@
       8. assert self.writer is not None в execute() — assert удаляется при
          запуске с python -O.  В production writer может быть None после
          неудачного _ensure_connected, и assert не сработает.
-      9. timeout при чтении возвращает {"status": "ok", "response": ""}.
-         Пустой ответ неотличим от реального пустого ответа устройства.
+      9. timeout при чтении пробрасывает TimeoutError — вызывающий код
+         обязан обрабатывать отсутствие ответа явно.
 
     SerialDriver:
      10. asyncio.to_thread БЕЗ asyncio.wait_for — если pyserial зависнет,
@@ -56,6 +56,7 @@
 
     python examples/19_driver_edge_cases.py
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -63,6 +64,8 @@ import logging
 import struct
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from kamio.drivers.base import BaseDriver
 from kamio.drivers.mock import MockHardwareDriver
@@ -76,6 +79,7 @@ logger = logging.getLogger("example.19")
 # ============================================================================
 # 1. MockHardwareDriver: failure_rate и connected state
 # ============================================================================
+
 
 async def demo_mock_failure_rate():
     """failure_rate=1.0 — КАЖДАЯ операция падает, включая connect."""
@@ -110,6 +114,7 @@ async def demo_mock_failure_rate():
 # ============================================================================
 # 2. MockHardwareDriver: read() возвращает RAW, а не dict
 # ============================================================================
+
 
 async def demo_mock_raw_return():
     """read() возвращает raw значение, а не dict — отличие от других драйверов."""
@@ -152,6 +157,7 @@ async def demo_mock_raw_return():
 # 3. ModbusTCPDriver: reconnect_attempts обрезается до 0
 # ============================================================================
 
+
 async def demo_modbus_reconnect_clamped():
     """reconnect_attempts=max(0, int(reconnect_attempts)) — отрицательные → 0."""
     print("\n--- 3. ModbusTCPDriver: reconnect_attempts clamped ---")
@@ -160,9 +166,7 @@ async def demo_modbus_reconnect_clamped():
     driver = ModbusTCPDriver("127.0.0.1", reconnect_attempts=-5)
 
     # ПРАВИЛЬНО: отрицательное значение молча обрезается до 0
-    assert driver.reconnect_attempts == 0, (
-        f"Ожидали 0, получили {driver.reconnect_attempts}"
-    )
+    assert driver.reconnect_attempts == 0, f"Ожидали 0, получили {driver.reconnect_attempts}"
     print(f"  reconnect_attempts=-5 → clamped to {driver.reconnect_attempts}")
 
     # reconnect_attempts=0 означает ОДНУ попытку (range(0+1) = [0])
@@ -183,6 +187,7 @@ async def demo_modbus_reconnect_clamped():
 # ============================================================================
 # 4. ModbusTCPDriver: transaction ID wraps at 0xFFFF
 # ============================================================================
+
 
 async def demo_modbus_transaction_wrap():
     """_transaction обнуляется на 0xFFFF через маску & 0xFFFF."""
@@ -216,6 +221,7 @@ async def demo_modbus_transaction_wrap():
 # ============================================================================
 # 5. ModbusTCPDriver: _close_writer глотает ВСЕ исключения
 # ============================================================================
+
 
 async def demo_modbus_close_writer_swallows():
     """_close_writer глотает ВСЕ исключения — ошибки закрытия невидимы."""
@@ -252,6 +258,7 @@ async def demo_modbus_close_writer_swallows():
 # 6. ModbusTCPDriver: _reconnect без backoff
 # ============================================================================
 
+
 async def demo_modbus_no_backoff():
     """_reconnect() не имеет backoff — мгновенный retry после сбоя."""
     print("\n--- 6. ModbusTCPDriver: _reconnect без backoff ---")
@@ -286,6 +293,7 @@ async def demo_modbus_no_backoff():
 # ============================================================================
 # 7. TelnetDriver: assert в production (удаляется с -O)
 # ============================================================================
+
 
 async def demo_telnet_assert_in_production():
     """assert в execute() удаляется при python -O — writer может быть None."""
@@ -330,23 +338,22 @@ async def demo_telnet_assert_in_production():
 
 
 # ============================================================================
-# 8. TelnetDriver: timeout возвращает "ok" с пустым response
+# 8. TelnetDriver: timeout чтения пробрасывает TimeoutError
 # ============================================================================
 
-async def demo_telnet_timeout_returns_ok():
-    """timeout при чтении возвращает {'status': 'ok', 'response': ''}."""
-    print("\n--- 8. TelnetDriver: timeout → status=ok, response='' ---")
 
-    # В TelnetDriver.execute():
+async def demo_telnet_timeout_returns_ok():
+    """timeout при чтении пробрасывается как TimeoutError (не status=ok)."""
+    print("\n--- 8. TelnetDriver: timeout → TimeoutError ---")
+
+    # В TelnetDriver._read_line():
     #   try:
     #       line = await asyncio.wait_for(self.reader.readline(), timeout=self.timeout)
-    #       response = line.decode().strip()
     #   except asyncio.TimeoutError:
-    #       self.logger.warning("Telnet read timeout")
-    #   return {"status": "ok", "command": command_name, "response": response}
+    #       raise TimeoutError(f"Telnet read timed out after {self.timeout}s")
     #
-    # ПОДВОХ: response="" при timeout неотличим от реального пустого ответа.
-    # status="ok" даже когда данных нет.
+    # TimeoutError пробрасывается из execute() — вызывающий код должен
+    # явно обработать отсутствие ответа, а не получать фиктивный status=ok.
 
     # Демонстрация через mock
     driver = TelnetDriver("127.0.0.1", timeout=0.05)
@@ -367,25 +374,33 @@ async def demo_telnet_timeout_returns_ok():
     driver.reader = fake_reader
     driver.writer = fake_writer
 
-    result = await driver.execute("get_status", {"wait_response": True})
+    with pytest.raises(TimeoutError, match="timed out"):
+        await driver.execute("get_status", {"wait_response": True})
+    print("  execute() при timeout: TimeoutError проброшен")
 
-    # НЕПРАВИЛЬНО: проверять result["status"] == "ok" и считать, что всё хорошо
-    # ПРАВИЛЬНО: проверять response на пустоту
-    assert result["status"] == "ok", "status='ok' даже при timeout!"
-    assert result["response"] == "", "response пустой при timeout"
-    print(f"  execute() при timeout: {result}")
-    print("  ВНИМАНИЕ: status='ok' с пустым response — неотличимо от реального пустого ответа")
+    # ВАЖНО: при timeout соединение закрывается (_read_line вызывает
+    # disconnect), чтобы поздний ответ не «съехал» на следующую команду.
+    assert driver.writer is None and driver.reader is None
+    print("  ВАЖНО: соединение закрыто — буферизованный поздний ответ не")
+    print("        попадёт в следующую команду")
 
-    # ПРАВИЛЬНЫЙ ПОДХОД: проверять response
-    if not result["response"]:
-        print("  ПРАВИЛЬНО: проверять response на пустоту, а не только status")
+    # ПРАВИЛЬНЫЙ ПОДХОД: обрабатывать TimeoutError явно
+    try:
+        # Следующий execute() переподключится через _ensure_connected()
+        # (здесь — снова на фейковые потоки).
+        driver.reader = fake_reader
+        driver.writer = fake_writer
+        await driver.execute("get_status", {"wait_response": True})
+    except TimeoutError as e:
+        print(f"  ПРАВИЛЬНО: перехвачен TimeoutError: {e}")
 
-    print("  OK: timeout → ok проверен")
+    print("  OK: timeout → TimeoutError проверен")
 
 
 # ============================================================================
 # 9. SerialDriver: asyncio.to_thread БЕЗ wait_for (может зависнуть)
 # ============================================================================
+
 
 async def demo_serial_no_async_timeout():
     """SerialDriver.read/execute используют to_thread без wait_for — зависание."""
@@ -427,6 +442,7 @@ async def demo_serial_no_async_timeout():
 # 10. SerialDriver: errors="replace" тихо искажает данные
 # ============================================================================
 
+
 async def demo_serial_errors_replace():
     """decode(errors='replace') тихо заменяет некорректные байты на U+FFFD."""
     print("\n--- 10. SerialDriver: errors='replace' искажает данные ---")
@@ -461,6 +477,7 @@ async def demo_serial_errors_replace():
 # ============================================================================
 # 11. BaseDriver: __aexit__ не подавляет исключения disconnect
 # ============================================================================
+
 
 async def demo_base_aexit_no_suppress():
     """__aexit__ не возвращает True — исключения disconnect не подавляются."""
@@ -508,7 +525,9 @@ async def demo_base_aexit_no_suppress():
         assert False
     except OSError as e:
         # НЕПРАВИЛЬНО: исходная ValueError затёрта OSError от disconnect!
-        print(f"  async with (ValueError в теле) → OSError от disconnect затёр исходную ошибку: {e}")
+        print(
+            f"  async with (ValueError в теле) → OSError от disconnect затёр исходную ошибку: {e}"
+        )
         print("  ВНИМАНИЕ: исходное исключение (ValueError) ПОТЕРЯНО!")
         assert "Disconnect failed" in str(e)
 
@@ -543,6 +562,7 @@ async def demo_base_aexit_no_suppress():
 # ============================================================================
 # 12. Все драйверы: disconnect глотает ошибки
 # ============================================================================
+
 
 async def demo_all_drivers_disconnect_swallows():
     """disconnect() во всех драйверах глотает или логирует ошибки закрытия."""
@@ -587,6 +607,7 @@ async def demo_all_drivers_disconnect_swallows():
 # 13. ПРАВИЛЬНЫЙ ПОДХОД: обёртка to_thread с wait_for
 # ============================================================================
 
+
 async def demo_right_way_wait_for_to_thread():
     """ПРАВИЛЬНО: оборачивать to_thread в wait_for для таймаута."""
     print("\n--- 13. ПРАВИЛЬНЫЙ ПОДХОД: wait_for вокруг to_thread ---")
@@ -626,6 +647,7 @@ async def demo_right_way_wait_for_to_thread():
 # ============================================================================
 # 14. ПРАВИЛЬНЫЙ ПОДХОД: обработка ошибок disconnect
 # ============================================================================
+
 
 async def demo_right_way_disconnect_handling():
     """ПРАВИЛЬНО: логировать ошибки disconnect, но не падать."""
@@ -687,6 +709,7 @@ async def demo_right_way_disconnect_handling():
 # ============================================================================
 # Main
 # ============================================================================
+
 
 async def main():
     print("=" * 70)

@@ -20,12 +20,15 @@
     - Логгер входящих сообщений
     - Преобразователь формата JSON → простой текст
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 from typing import Any, Optional
+
+from _bounded import run_bounded
 
 from kamio import KamioApp, CustomNode
 
@@ -39,6 +42,7 @@ logger = logging.getLogger("custom_nodes_demo")
 # =====================================================================
 # Пример 1: Логгер сообщений
 # =====================================================================
+
 
 class MessageLoggerNode(CustomNode):
     """
@@ -96,6 +100,7 @@ class MessageLoggerNode(CustomNode):
 # Пример 2: Мост (bridge) — пересылка сообщений между топиками
 # =====================================================================
 
+
 class TopicBridgeNode(CustomNode):
     """
     Узел-мост: пересылает сообщения из одного топика в другой.
@@ -134,9 +139,7 @@ class TopicBridgeNode(CustomNode):
         # имён узла (например, чужие устройства).
         self.subscribe_absolute(self._source_topic, qos=1)
         self._is_running = True
-        self.logger.info(
-            f"TopicBridgeNode запущен: {self._source_topic} → {self._target_topic}"
-        )
+        self.logger.info(f"TopicBridgeNode запущен: {self._source_topic} → {self._target_topic}")
 
     async def stop(self) -> None:
         """Останавливаем узел и очищаем подписки."""
@@ -152,15 +155,13 @@ class TopicBridgeNode(CustomNode):
         # Публикуем в целевой топик через publish_absolute().
         # publish_absolute() публикует БЕЗ добавления topic_prefix.
         self.publish_absolute(self._target_topic, payload, qos=1)
-        self.logger.info(
-            f"🌉 [мост] {topic} → {self._target_topic} "
-            f"({len(payload)} байт)"
-        )
+        self.logger.info(f"🌉 [мост] {topic} → {self._target_topic} " f"({len(payload)} байт)")
 
 
 # =====================================================================
 # Пример 3: Преобразователь JSON → текст
 # =====================================================================
+
 
 class JsonToTextNode(CustomNode):
     """
@@ -232,6 +233,7 @@ class JsonToTextNode(CustomNode):
 # Пример 4: Счётчик сообщений с периодической публикацией статистики
 # =====================================================================
 
+
 class MessageCounterNode(CustomNode):
     """
     Узел, который считает сообщения и периодически публикует статистику.
@@ -255,9 +257,7 @@ class MessageCounterNode(CustomNode):
 
         # Запускаем периодическую публикацию статистики
         self._stats_task = asyncio.create_task(self._publish_stats())
-        self.logger.info(
-            f"MessageCounterNode запущен, статистика каждые {self._stats_interval}с"
-        )
+        self.logger.info(f"MessageCounterNode запущен, статистика каждые {self._stats_interval}с")
 
     async def stop(self) -> None:
         """Останавливаем задачу статистики и очищаем подписки."""
@@ -296,6 +296,7 @@ class MessageCounterNode(CustomNode):
 # =====================================================================
 # Основная функция
 # =====================================================================
+
 
 async def main():
     logger.info("=== Демонстрация кастомных MQTT-узлов kamio ===\n")
@@ -412,7 +413,9 @@ async def main():
     logger.info("\n--- Тест 6: lifecycle hooks (on_connect уже сработал) ---")
     lifecycle = app.get_custom_node("lifecycle")
     if lifecycle:
-        logger.info(f"LifecycleAwareNode: connects={lifecycle._connect_count}, disconnects={lifecycle._disconnect_count}")
+        logger.info(
+            f"LifecycleAwareNode: connects={lifecycle._connect_count}, disconnects={lifecycle._disconnect_count}"
+        )
 
     logger.info("\n--- Тест 7: heartbeat (фоновая задача) ---")
     heartbeat = app.get_custom_node("heartbeat")
@@ -443,6 +446,7 @@ async def main():
 # Демонстрация: publish_async (non-blocking)
 # =====================================================================
 
+
 class AsyncPublisherNode(CustomNode):
     """Узел, демонстрирующий publish_async() — неблокирующую публикацию.
 
@@ -471,7 +475,9 @@ class AsyncPublisherNode(CustomNode):
     async def handle_message(self, topic: str, payload: bytes) -> None:
         """При получении триггера — публикуем ответ через publish_async."""
         self._publish_count += 1
-        response = f"async_response_{self._publish_count}: {payload.decode('utf-8', errors='replace')}"
+        response = (
+            f"async_response_{self._publish_count}: {payload.decode('utf-8', errors='replace')}"
+        )
 
         # publish_async — неблокирующая публикация (через asyncio.to_thread)
         await self.publish_async("response", response, qos=1)
@@ -484,6 +490,7 @@ class AsyncPublisherNode(CustomNode):
 # =====================================================================
 # Демонстрация: on_connect / on_disconnect hooks
 # =====================================================================
+
 
 class LifecycleAwareNode(CustomNode):
     """Узел с реализованными on_connect() и on_disconnect() хуками.
@@ -539,6 +546,7 @@ class LifecycleAwareNode(CustomNode):
 # Демонстрация: node с фоновыми задачами (create_task)
 # =====================================================================
 
+
 class HeartbeatNode(CustomNode):
     """Узел с фоновой задачей — периодически публикует heartbeat.
 
@@ -559,9 +567,7 @@ class HeartbeatNode(CustomNode):
         self._is_running = True
         # Запускаем фоновую задачу heartbeat
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        self.logger.info(
-            f"HeartbeatNode запущен, heartbeat каждые {self._interval}s"
-        )
+        self.logger.info(f"HeartbeatNode запущен, heartbeat каждые {self._interval}s")
 
     async def stop(self) -> None:
         # Отменяем фоновую задачу перед остановкой
@@ -619,6 +625,7 @@ class HeartbeatNode(CustomNode):
 # Демонстрация: matches() логика (prefix matching)
 # =====================================================================
 
+
 def demo_matches_logic():
     """
     Показывает логику работы matches() — проверки соответствия топика.
@@ -634,9 +641,14 @@ def demo_matches_logic():
 
     # Создаём mock MQTT-клиент (не подключаемся к брокеру)
     class MockMqtt:
-        def subscribe(self, *a, **kw): pass
-        def unsubscribe(self, *a, **kw): pass
-        def publish(self, *a, **kw): pass
+        def subscribe(self, *a, **kw):
+            pass
+
+        def unsubscribe(self, *a, **kw):
+            pass
+
+        def publish(self, *a, **kw):
+            pass
 
     mock_mqtt = MockMqtt()
 
@@ -674,4 +686,4 @@ def demo_matches_logic():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_bounded(main())

@@ -27,6 +27,7 @@
     16. Security — TLS, auth, client_id
     17. Monitoring — metrics, logging
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,6 +45,7 @@ from kamio.core.event_bus import EventBus
 from kamio.core.hooks import HooksManager
 from kamio.core.rules import Rule, RuleEngine, RuleEvent
 from kamio.core.subscription import PriorityRegistry
+from kamio.device import EchoCache
 from kamio.drivers.mock import MockHardwareDriver
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -81,8 +83,10 @@ def warn(name: str, detail: str = "") -> None:
 # Тестовые устройства
 # =====================================================================
 
+
 class ProdLight(Device):
     """Устройство для проверок."""
+
     power: bool = state(default=False, writable=True, description="Питание")
     brightness: int = state(default=100, min=0, max=255, writable=True, description="Яркость")
     mode: str = state(default="auto", choices=("auto", "manual", "off"), writable=True)
@@ -98,12 +102,14 @@ class ProdLight(Device):
 
 class ProdSensor(Device):
     """Датчик без defaults для теста."""
+
     value: float = telemetry(default=0.0, unit="°C", freq="1s")
 
 
 # =====================================================================
 # 1. Конфигурация
 # =====================================================================
+
 
 def check_config() -> None:
     """Проверка конфигурации."""
@@ -113,11 +119,14 @@ def check_config() -> None:
     import json
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump({
-            "mqtt_broker": "mqtt://localhost:1883",
-            "log_level": "INFO",
-            "telemetry_min_freq": "0.5",
-        }, f)
+        json.dump(
+            {
+                "mqtt_broker": "mqtt://localhost:1883",
+                "log_level": "INFO",
+                "telemetry_min_freq": "0.5",
+            },
+            f,
+        )
         path = f.name
 
     try:
@@ -145,7 +154,9 @@ def check_config() -> None:
 
         # Boolean casting через get(cast=bool) — inline в Config.get
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f3:
-            json.dump({"b_true": "true", "b_false": "false", "b_yes": "yes", "b_on": "on", "b_1": "1"}, f3)
+            json.dump(
+                {"b_true": "true", "b_false": "false", "b_yes": "yes", "b_on": "on", "b_1": "1"}, f3
+            )
             cfg3_path = f3.name
         cfg3 = Config(cfg3_path)
         check("Boolean 'true' → True", cfg3.get("b_true", cast=bool) == True)
@@ -166,6 +177,7 @@ def check_config() -> None:
 # =====================================================================
 # 2. MQTT
 # =====================================================================
+
 
 def check_mqtt() -> None:
     """Проверка MQTT настроек."""
@@ -194,6 +206,7 @@ def check_mqtt() -> None:
 
     # ACK cache limit
     from kamio.core.mqtt_connection import _ACK_CACHE_LIMIT
+
     check(f"ACK cache limit = {_ACK_CACHE_LIMIT}", _ACK_CACHE_LIMIT == 1024)
     warn("ACK cache 1024 — может быть мало для >1000 подписок", "")
 
@@ -201,6 +214,7 @@ def check_mqtt() -> None:
 # =====================================================================
 # 3. Драйверы
 # =====================================================================
+
 
 async def check_drivers() -> None:
     """Проверка драйверов."""
@@ -225,6 +239,7 @@ async def check_drivers() -> None:
 
     # BaseDriver contract
     from kamio.drivers.base import BaseDriver
+
     check("BaseDriver — ABC", hasattr(BaseDriver, "__abstractmethods__"))
     check("BaseDriver имеет connect", hasattr(BaseDriver, "connect"))
     check("BaseDriver имеет disconnect", hasattr(BaseDriver, "disconnect"))
@@ -234,12 +249,16 @@ async def check_drivers() -> None:
     # async context manager
     check("BaseDriver __aenter__", hasattr(BaseDriver, "__aenter__"))
     check("BaseDriver __aexit__", hasattr(BaseDriver, "__aexit__"))
-    warn("__aexit__ не подавляет исключения disconnect", "Оригинальное исключение может быть потеряно")
+    warn(
+        "__aexit__ не подавляет исключения disconnect",
+        "Оригинальное исключение может быть потеряно",
+    )
 
 
 # =====================================================================
 # 4. Устройства
 # =====================================================================
+
 
 def check_devices() -> None:
     """Проверка устройств."""
@@ -288,6 +307,7 @@ def check_devices() -> None:
 # 5. Правила
 # =====================================================================
 
+
 def check_rules() -> None:
     """Проверка правил."""
     logger.info("\n=== 5. Правила ===")
@@ -306,8 +326,15 @@ def check_rules() -> None:
     async def dummy():
         pass
 
-    rule = Rule(func=dummy, device_class=None, fields=["x"], interval=None,
-                enabled=True, run_on_start=False, description="")
+    rule = Rule(
+        func=dummy,
+        device_class=None,
+        fields=["x"],
+        interval=None,
+        enabled=True,
+        run_on_start=False,
+        description="",
+    )
     check("Rule.enabled по умолчанию True", rule.enabled)
 
     rule.enabled = False
@@ -315,20 +342,30 @@ def check_rules() -> None:
     warn("Disabled rules silently skip (no logging)", "трудно отлаживать")
 
     # Interval + fields
-    rule_both = Rule(func=dummy, device_class=None, fields=["x"], interval=10,
-                     enabled=True, run_on_start=False, description="")
+    rule_both = Rule(
+        func=dummy,
+        device_class=None,
+        fields=["x"],
+        interval=10,
+        enabled=True,
+        run_on_start=False,
+        description="",
+    )
     warn("Rule с interval AND fields: никогда не сработает как event rule", "")
 
     # Parameter count dispatch
     check("RuleEngine определяет params по сигнатуре", True, "0, 1, или 2 params")
 
     # Lambda rules
-    warn("Lambda rules: '.' в __qualname__ нужен для device-level detection", "lambdas не работают!")
+    warn(
+        "Lambda rules: '.' в __qualname__ нужен для device-level detection", "lambdas не работают!"
+    )
 
 
 # =====================================================================
 # 6. Плагины
 # =====================================================================
+
 
 def check_plugins() -> None:
     """Проверка плагинов."""
@@ -353,7 +390,10 @@ def check_plugins() -> None:
     warn("configure() заменяет весь config (no merge)", "повторный configure перезаписывает")
 
     # _find_plugin_class returns first
-    warn("_find_plugin_class возвращает ПЕРВЫЙ Plugin subclass", "несколько классов в модуле — проблема")
+    warn(
+        "_find_plugin_class возвращает ПЕРВЫЙ Plugin subclass",
+        "несколько классов в модуле — проблема",
+    )
 
     # Circular dependency
     check("Circular dep detection через _loading set", True)
@@ -365,6 +405,7 @@ def check_plugins() -> None:
 # =====================================================================
 # 7. Event Bus
 # =====================================================================
+
 
 async def check_event_bus() -> None:
     """Проверка Event Bus."""
@@ -435,6 +476,7 @@ async def check_event_bus() -> None:
 # 8. Телеметрия
 # =====================================================================
 
+
 def check_telemetry() -> None:
     """Проверка телеметрии."""
     logger.info("\n=== 8. Телеметрия ===")
@@ -447,6 +489,7 @@ def check_telemetry() -> None:
 
     # parse_freq
     from kamio.data_fields import parse_freq
+
     check("parse_freq('5s') = 5.0", parse_freq("5s") == 5.0)
     check("parse_freq('1m') = 60.0", parse_freq("1m") == 60.0)
     check("parse_freq('100ms') = 0.1", parse_freq("100ms") == 0.1)
@@ -483,12 +526,14 @@ def check_telemetry() -> None:
 # 9. Hot Reload
 # =====================================================================
 
+
 def check_hot_reload() -> None:
     """Проверка Hot Reload."""
     logger.info("\n=== 9. Hot Reload ===")
 
     try:
         from kamio.core.hot_reload import _WATCHDOG_AVAILABLE
+
         if _WATCHDOG_AVAILABLE:
             check("watchdog доступен", True)
         else:
@@ -518,6 +563,7 @@ def check_hot_reload() -> None:
 # =====================================================================
 # 10. HA Discovery
 # =====================================================================
+
 
 def check_ha_discovery() -> None:
     """Проверка HA Discovery."""
@@ -567,6 +613,7 @@ def check_ha_discovery() -> None:
 # 11. Custom Nodes
 # =====================================================================
 
+
 def check_custom_nodes() -> None:
     """Проверка Custom Nodes."""
     logger.info("\n=== 11. Custom Nodes ===")
@@ -605,6 +652,7 @@ def check_custom_nodes() -> None:
 # =====================================================================
 # 12. Resource Cleanup
 # =====================================================================
+
 
 async def check_resource_cleanup() -> None:
     """Проверка resource cleanup."""
@@ -654,12 +702,14 @@ async def check_resource_cleanup() -> None:
 # 13. Error Handling
 # =====================================================================
 
+
 def check_error_handling() -> None:
     """Проверка error handling."""
     logger.info("\n=== 13. Error Handling ===")
 
     # Debug mode
     from kamio.core.handlers import DeviceHandler
+
     check("DeviceHandler имеет debug параметр", True, "debug=True re-raises exceptions")
 
     # Error ACK
@@ -682,23 +732,28 @@ def check_error_handling() -> None:
 # 14. Thread Safety
 # =====================================================================
 
+
 def check_thread_safety() -> None:
     """Проверка thread safety."""
     logger.info("\n=== 14. Thread Safety ===")
 
-    # threading.Lock in async context
+    # EchoCache: lock-free OrderedDict (set/dict ops атомарны под GIL,
+    # безопасны из event loop и worker-потоков без threading.Lock)
     light = ProdLight()
-    check("_cinds_lock — threading.Lock", isinstance(light._cinds_lock, type(threading.Lock())))
-    warn("threading.Lock в async context", "safe если не held across await")
+    check("_echo_cache — EchoCache", isinstance(light._echo_cache, EchoCache))
+    check("EchoCache без lock (lock-free)", not hasattr(light._echo_cache, "_lock"))
 
     # StateManager RLock
     from kamio.core.state import StateManager
+
     sm = StateManager()
     check("StateManager _state_lock — RLock", hasattr(sm, "_state_lock"))
 
-    # Correlation RLock
+    # Correlation: чистый asyncio (без threading.RLock — только event loop)
     from kamio.core.correlation import BaseCorrelationManager
-    warn("Correlation: threading.RLock + asyncio.Future", "mixing paradigms")
+
+    cm = BaseCorrelationManager()
+    check("Correlation без threading.RLock", not hasattr(cm, "_lock"))
 
     # _bg_tasks not thread-safe
     warn("_bg_tasks set: НЕ thread-safe", "но likely только event loop access")
@@ -715,22 +770,25 @@ def check_thread_safety() -> None:
 # 15. Performance
 # =====================================================================
 
+
 def check_performance() -> None:
     """Проверка performance."""
     logger.info("\n=== 15. Performance ===")
 
     # Echo cache
     light = ProdLight()
-    check(f"Echo cache limit = {light._own_state_cinds_limit}", light._own_state_cinds_limit == 4096)
+    check(f"Echo cache limit = {light._echo_cache._limit}", light._echo_cache._limit == 4096)
     warn("Echo cache 4096: при >4096 state changes echo suppression fails", "")
 
     # ACK cache
     from kamio.core.mqtt_connection import _ACK_CACHE_LIMIT
+
     check(f"ACK cache limit = {_ACK_CACHE_LIMIT}", _ACK_CACHE_LIMIT == 1024)
     warn("ACK cache 1024: при >1024 early ACKs теряются", "")
 
     # Pending requests
     from kamio.core.correlation import BaseCorrelationManager
+
     cm = BaseCorrelationManager(max_pending=1000)
     check(f"max_pending = {cm._max_pending}", cm._max_pending == 1000)
     warn("max_pending: при превышении → RuntimeError", "backpressure")
@@ -748,6 +806,7 @@ def check_performance() -> None:
 # =====================================================================
 # 16. Security
 # =====================================================================
+
 
 def check_security() -> None:
     """Проверка security."""
@@ -779,18 +838,21 @@ def check_security() -> None:
 # 17. Monitoring
 # =====================================================================
 
+
 def check_monitoring() -> None:
     """Проверка monitoring."""
     logger.info("\n=== 17. Monitoring ===")
 
     # LoggingPlugin
     from kamio.plugins.builtin.logging_plugin import LoggingPlugin
+
     lp = LoggingPlugin()
     check("LoggingPlugin name='logging'", lp.name == "logging")
     check("LoggingPlugin version", lp.version == "1.0.0")
 
     # MetricsPlugin
     from kamio.plugins.builtin.metrics_plugin import MetricsPlugin
+
     mp = MetricsPlugin()
     check("MetricsPlugin name='metrics'", mp.name == "metrics")
     check("MetricsPlugin version", mp.version == "1.0.0")
@@ -818,6 +880,7 @@ def check_monitoring() -> None:
 # =====================================================================
 # Главный цикл
 # =====================================================================
+
 
 async def main():
     logger.info("=" * 60)

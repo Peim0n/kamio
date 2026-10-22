@@ -29,6 +29,7 @@ EventBus и HooksManager для разработчиков фреймворка.
 
     python examples/20_event_bus_internals.py
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -49,6 +50,7 @@ logging.basicConfig(level=logging.CRITICAL, format="%(message)s")
 # =====================================================================
 # 1. Приоритет: ВЫСШИЙ = ПЕРВЫЙ (не наоборот)
 # =====================================================================
+
 
 async def demo_priority_higher_first() -> None:
     """Высший приоритет выполняется первым — частая путаница."""
@@ -73,6 +75,7 @@ async def demo_priority_higher_first() -> None:
 # =====================================================================
 # 2. Равный приоритет: LIFO (последний зарегистрированный — последний в группе)
 # =====================================================================
+
 
 async def demo_equal_priority_lifo() -> None:
     """При равном приоритете соблюдается LIFO внутри группы."""
@@ -100,6 +103,7 @@ async def demo_equal_priority_lifo() -> None:
 # =====================================================================
 # 3. filter_fn с исключением: тихий пропуск подписчика
 # =====================================================================
+
 
 async def demo_filter_fn_exception_silent_skip() -> None:
     """Исключение в filter_fn перехватывается — подписчик пропускается тихо."""
@@ -130,6 +134,7 @@ async def demo_filter_fn_exception_silent_skip() -> None:
 # =====================================================================
 # 4. filter_fn: truthy-проверка (None, 0, False = отфильтровано)
 # =====================================================================
+
 
 async def demo_filter_fn_truthy_check() -> None:
     """filter_fn проверяется через ``not passes`` — falsy значения отфильтрованы."""
@@ -168,31 +173,34 @@ async def demo_filter_fn_truthy_check() -> None:
 # 5. Синхронный callback блокирует event loop
 # =====================================================================
 
+
 async def demo_sync_callback_blocks_loop() -> None:
     """Синхронный callback вызывается напрямую — блокирует event loop."""
     bus = EventBus()
+    # perf_counter — высокое разрешение; monotonic на Windows слишком грубый
+    # (15.6 мс) и давал бы одинаковые метки у подряд идущих вызовов.
+    clock = time.perf_counter
     timestamps: List[float] = []
 
     def slow_sync(data: Dict[str, Any]) -> None:
         # Имитация блокирующей операции (time.sleep блокирует loop!)
         time.sleep(0.05)
-        timestamps.append(time.monotonic())
+        timestamps.append(clock())
 
     async def async_after(data: Dict[str, Any]) -> None:
-        timestamps.append(time.monotonic())
+        timestamps.append(clock())
 
     bus.subscribe("evt", slow_sync, priority=10)
     bus.subscribe("evt", async_after, priority=1)
 
-    start = time.monotonic()
+    start = clock()
     await bus.publish("evt", {})
-    elapsed = time.monotonic() - start
+    elapsed = clock() - start
 
     # sync callback отработал первым (приоритет 10), но заблокировал loop на 50мс
     # async_after не начнётся пока sync не завершится
     assert elapsed >= 0.04, (
-        f"Ожидалось >= 0.04с, прошло {elapsed:.3f}с. "
-        f"Sync callback блокирует event loop."
+        f"Ожидалось >= 0.04с, прошло {elapsed:.3f}с. " f"Sync callback блокирует event loop."
     )
     assert timestamps[0] < timestamps[1], "Sync должен завершиться раньше async"
     print(f"[OK] 5. Sync callback блокирует loop ({elapsed:.3f}с)")
@@ -201,6 +209,7 @@ async def demo_sync_callback_blocks_loop() -> None:
 # =====================================================================
 # 6. Async callback ожидается (await)
 # =====================================================================
+
 
 async def demo_async_callback_awaited() -> None:
     """Async callback корректно ожидается через await."""
@@ -215,8 +224,7 @@ async def demo_async_callback_awaited() -> None:
     await bus.publish("evt", {})
 
     assert results == ["async_done"], (
-        f"Ожидалось ['async_done'], получено {results}. "
-        f"Async callback должен быть await."
+        f"Ожидалось ['async_done'], получено {results}. " f"Async callback должен быть await."
     )
     print("[OK] 6. Async callback корректно ожидается")
 
@@ -224,6 +232,7 @@ async def demo_async_callback_awaited() -> None:
 # =====================================================================
 # 7. publish() и timestamp: 0/False трактуются как «отсутствует»
 # =====================================================================
+
 
 async def demo_timestamp_falsy_treated_as_missing() -> None:
     """publish() добавляет timestamp если ``not data.get("timestamp")``."""
@@ -235,9 +244,9 @@ async def demo_timestamp_falsy_treated_as_missing() -> None:
     # Случай 1: нет timestamp -> добавляется
     await bus.publish("evt", {"v": 1})
     assert "timestamp" in received[0], "timestamp должен быть добавлен если отсутствует"
-    assert isinstance(received[0]["timestamp"], datetime), (
-        f"Ожидался datetime, получен {type(received[0]['timestamp'])}"
-    )
+    assert isinstance(
+        received[0]["timestamp"], datetime
+    ), f"Ожидался datetime, получен {type(received[0]['timestamp'])}"
 
     # Случай 2: timestamp=0 -> НЕПРАВИЛЬНО думать, что 0 будет заменён на datetime.
     # ``not 0`` == True -> publish() входит в if-блок и создаёт новый dict:
@@ -274,12 +283,14 @@ async def demo_timestamp_falsy_treated_as_missing() -> None:
 # 8. unsubscribe: проверка по идентичности (is), не по равенству (==)
 # =====================================================================
 
+
 async def demo_unsubscribe_identity_check() -> None:
     """unsubscribe использует ``is`` для сравнения, а не ``==``."""
     bus = EventBus()
 
     class CallableObj:
         """Объект, который можно вызывать и у которого __eq__ всегда True."""
+
         def __call__(self, data: Dict[str, Any]) -> None:
             pass
 
@@ -315,6 +326,7 @@ async def demo_unsubscribe_identity_check() -> None:
 # 9. list_subscribers: возвращает только callback, без filter_fn
 # =====================================================================
 
+
 async def demo_list_subscribers_no_filter() -> None:
     """list_subscribers возвращает только callback-и, не filter_fn."""
     bus = EventBus()
@@ -339,6 +351,7 @@ async def demo_list_subscribers_no_filter() -> None:
 # =====================================================================
 # 10. publish() создаёт НОВЫЙ dict — исходный не мутируется
 # =====================================================================
+
 
 async def demo_publish_creates_new_dict() -> None:
     """publish() создаёт новый dict с timestamp, не мутирует исходный."""
@@ -365,6 +378,7 @@ async def demo_publish_creates_new_dict() -> None:
 # 11. HooksManager: тот же порядок приоритетов, но БЕЗ timestamp
 # =====================================================================
 
+
 async def demo_hooks_no_timestamp() -> None:
     """HooksManager.trigger не добавляет timestamp (в отличие от EventBus.publish)."""
     hooks = HooksManager()
@@ -381,18 +395,19 @@ async def demo_hooks_no_timestamp() -> None:
         f"Ожидалось ('arg1',), получено {received_args[0]['args']}. "
         f"HooksManager.trigger передаёт args напрямую."
     )
-    assert received_args[0]["kwargs"] == {"key": "val"}, (
-        f"Ожидалось {{'key': 'val'}}, получено {received_args[0]['kwargs']}"
-    )
-    assert "timestamp" not in received_args[0]["kwargs"], (
-        "HooksManager НЕ добавляет timestamp (в отличие от EventBus.publish)"
-    )
+    assert received_args[0]["kwargs"] == {
+        "key": "val"
+    }, f"Ожидалось {{'key': 'val'}}, получено {received_args[0]['kwargs']}"
+    assert (
+        "timestamp" not in received_args[0]["kwargs"]
+    ), "HooksManager НЕ добавляет timestamp (в отличие от EventBus.publish)"
     print("[OK] 11. HooksManager: НЕ добавляет timestamp")
 
 
 # =====================================================================
 # 12. HooksManager: хранит hook напрямую (не в кортеже)
 # =====================================================================
+
 
 async def demo_hooks_stores_directly() -> None:
     """HooksManager хранит hook напрямую, EventBus — в кортеже (callback, filter_fn)."""
@@ -418,9 +433,9 @@ async def demo_hooks_stores_directly() -> None:
     # EventBus хранит кортеж (callback, filter_fn)
     bus_items = bus._registry._items["evt"]
     stored = bus_items[0][1]
-    assert isinstance(stored, tuple), (
-        f"EventBus хранит кортеж (callback, filter_fn), получено {type(stored)}"
-    )
+    assert isinstance(
+        stored, tuple
+    ), f"EventBus хранит кортеж (callback, filter_fn), получено {type(stored)}"
     assert stored[0] is my_cb, "Первый элемент кортежа — callback"
     assert stored[1] is None, "Второй элемент — filter_fn (None если не задан)"
     print("[OK] 12. EventBus: кортеж (cb, filter); HooksManager: напрямую")
@@ -429,6 +444,7 @@ async def demo_hooks_stores_directly() -> None:
 # =====================================================================
 # 13. PriorityRegistry: binary search для O(n) вставки
 # =====================================================================
+
 
 async def demo_priority_registry_binary_search() -> None:
     """PriorityRegistry использует бинарный поиск для вставки."""
@@ -443,8 +459,7 @@ async def demo_priority_registry_binary_search() -> None:
     items = reg.list("k")
     # Порядок: высший приоритет первым
     assert items == ["a", "b", "c", "d"], (
-        f"Ожидался порядок по убыванию приоритета [a(10), b(7), c(5), d(1)], "
-        f"получен {items}"
+        f"Ожидался порядок по убыванию приоритета [a(10), b(7), c(5), d(1)], " f"получен {items}"
     )
     print("[OK] 13. PriorityRegistry: бинарный поиск -> убывание приоритета")
 
@@ -452,6 +467,7 @@ async def demo_priority_registry_binary_search() -> None:
 # =====================================================================
 # 14. Ошибки в callback логируются, но не останавливают других подписчиков
 # =====================================================================
+
 
 async def demo_callback_error_does_not_stop_others() -> None:
     """Исключение в callback перехватывается в _dispatch, остальные подписчики работают."""
@@ -482,6 +498,7 @@ async def demo_callback_error_does_not_stop_others() -> None:
 # 15. _dispatch делает snapshot списка (копию) — безопасен при мутации
 # =====================================================================
 
+
 async def demo_dispatch_snapshot_safe() -> None:
     """_dispatch делает snapshot через registry.list() — мутации во время диспетчера безопасны."""
     bus = EventBus()
@@ -511,8 +528,7 @@ async def demo_dispatch_snapshot_safe() -> None:
     called.clear()
     await bus.publish("evt", {})
     assert called == ["first"], (
-        f"Ожидалось ['first'], получено {called}. "
-        f"После отписки second_cb больше не вызывается."
+        f"Ожидалось ['first'], получено {called}. " f"После отписки second_cb больше не вызывается."
     )
     print("[OK] 15. _dispatch: snapshot защищает от мутаций во время цикла")
 
@@ -520,6 +536,7 @@ async def demo_dispatch_snapshot_safe() -> None:
 # =====================================================================
 # Точка входа
 # =====================================================================
+
 
 async def main() -> None:
     print("=" * 70)

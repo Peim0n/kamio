@@ -19,13 +19,15 @@ MQTT-слой kamio построен на gmqtt и имеет множество
       4. _resolve_ack — staticmethod, НЕ потокобезопасный.  dict.pop и
          dict.__setitem__ атомарны в CPython (GIL), но не гарантированы.
 
-    gmqtt private methods:
-      5. monkey-patching: client._reconnect_delay, client._reconnect_retries,
-         client._kamio_wait_for_suback, client._kamio_wait_for_unsuback.
-         Приватные атрибуты gmqtt могут измениться в любой версии.
+    gmqtt public API + kamio adapter:
+      5. reconnect настраивается через публичные client.reconnect_delay /
+         client.reconnect_retries; единственные добавляемые атрибуты —
+         client._kamio_wait_for_suback / _kamio_wait_for_unsuback.
+         На приватные атрибуты gmqtt полагаться нельзя — их нет в 0.8.
 
     Reconnect:
-      6. reconnect_retries=0 означает БЕСКОНЕЧНЫЕ попытки (gmqtt convention).
+      6. reconnect_retries=-1 означает БЕСКОНЕЧНЫЕ попытки (UNLIMITED_RECONNECTS);
+         backoff растёт x2 до max и сбрасывается при connect.
 
     Client ID:
       7. client_id=None → пустая строка "" → gmqtt генерирует случайный ID.
@@ -33,8 +35,8 @@ MQTT-слой kamio построен на gmqtt и имеет множество
 
     BaseNode:
       8. start() молча возвращает None, если _is_running=True (no-op, без предупреждения).
-      9. _is_running=True даже если подписки НЕ удались (ошибки логируются, но
-         флаг устанавливается в любом случае).
+      9. start() бросает ошибку при неудачных подписках: частичные подписки
+         откатываются, _is_running остаётся False.
      10. on() ЗАМЕНЯЕТ handler, а не добавляет.  Повторный on() для того же
          типа перезаписывает предыдущий handler.
 
@@ -47,19 +49,22 @@ MQTT-слой kamio построен на gmqtt и имеет множество
      15. DeviceNode: исключение в handler → сообщение ПОТЕРЯНО (логируется exception).
 
     DeviceNode lifecycle:
-     16. on_stop() вызывается ДО super().stop() — если on_stop падает,
-         super().stop() НИКОГДА не вызывается → утечка подписок.
+     16. Падение on_stop() логируется, но super().stop() всегда выполняется —
+         подписки отписываются, узел останавливается корректно.
 
 Запуск (БЕЗ MQTT-брокера)::
 
     python examples/23_mqtt_internals.py
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from kamio.core.envelope import Envelope, EnvelopeType, SERVER_ID
 from kamio.core.mqtt_nodes import BaseNode, DeviceNode, BROADCAST_ID
@@ -72,6 +77,7 @@ logger = logging.getLogger("example.23")
 # Mock MQTT client для тестирования без брокера
 # ============================================================================
 
+
 class MockMqttClient:
     """Мок gmqtt.Client для тестирования без MQTT-брокера."""
 
@@ -81,8 +87,9 @@ class MockMqttClient:
         self._unsub_counter = 0
         self._published: list[tuple[str, bytes, int, bool]] = []
         self._subscriptions: dict[str, int] = {}
-        self._reconnect_delay = 1.0
-        self._reconnect_retries = 0
+        # gmqtt 0.8 public reconnect API
+        self.reconnect_delay = 1.0
+        self.reconnect_retries = -1
         self._on_subscribe = None
         self._on_unsubscribe = None
 
@@ -118,6 +125,7 @@ class MockMqttClient:
 # ============================================================================
 # 1. ACK cache limit 1024 (не настраивается)
 # ============================================================================
+
 
 async def demo_ack_cache_limit():
     """_ACK_CACHE_LIMIT=1024 — не настраивается, eviction по одной записи."""
@@ -157,6 +165,7 @@ async def demo_ack_cache_limit():
 # ============================================================================
 # 2. disconnect НЕ очищает ACK-кэши (утечка памяти)
 # ============================================================================
+
 
 async def demo_disconnect_no_ack_cleanup():
     """disconnect() не очищает _sub_acks / _subed_mids — утечка памяти."""
@@ -205,6 +214,7 @@ async def demo_disconnect_no_ack_cleanup():
 # 3. _resolve_ack не потокобезопасен
 # ============================================================================
 
+
 async def demo_resolve_ack_not_thread_safe():
     """_resolve_ack — staticmethod, не имеет блокировки."""
     print("\n--- 3. _resolve_ack не потокобезопасен ---")
@@ -245,58 +255,89 @@ async def demo_resolve_ack_not_thread_safe():
 # 4. gmqtt private methods monkey-patched
 # ============================================================================
 
+
 async def demo_gmqtt_monkey_patching():
-    """MqttConnection патчит приватные атрибуты gmqtt.Client."""
-    print("\n--- 4. gmqtt private methods monkey-patched ---")
+    """MqttConnection настраивает gmqtt.Client через публичный API + адаптер."""
+    print("\n--- 4. gmqtt public API + kamio adapter attrs ---")
 
     from kamio.core.mqtt_connection import MqttConnection
 
     mqtt = MqttConnection("mqtt://localhost:1883", client_id="test")
 
-    # Проверяем, что приватные атрибуты gmqtt установлены
-    assert hasattr(mqtt.client, "_reconnect_delay"), "_reconnect_delay установлен"
-    assert hasattr(mqtt.client, "_reconnect_retries"), "_reconnect_retries установлен"
+    # Reconnect настраивается через публичные свойства gmqtt (reconnect_delay /
+    # reconnect_retries), а backoff живёт в MqttConnection (note_connected /
+    # note_disconnected) — приватных _reconnect_* атрибутов у gmqtt 0.8 нет.
+    assert (
+        mqtt.client.reconnect_delay == mqtt._reconnect_min_delay
+    ), "reconnect_delay инициализирован минимальной задержкой"
+    assert mqtt.client.reconnect_retries == -1, "-1 = unlimited retries (UNLIMITED_RECONNECTS)"
+
+    # _kamio_wait_for_* — единственные добавляемые атрибуты: явный контракт
+    # адаптера, через который BaseNode ждёт SUBACK/UNSUBACK.
     assert hasattr(mqtt.client, "_kamio_wait_for_suback"), "_kamio_wait_for_suback установлен"
     assert hasattr(mqtt.client, "_kamio_wait_for_unsuback"), "_kamio_wait_for_unsuback установлен"
 
-    print(f"  client._reconnect_delay = {mqtt.client._reconnect_delay}")
-    print(f"  client._reconnect_retries = {mqtt.client._reconnect_retries}")
+    print(f"  client.reconnect_delay = {mqtt.client.reconnect_delay}")
+    print(f"  client.reconnect_retries = {mqtt.client.reconnect_retries} (-1 = unlimited)")
     print(f"  client._kamio_wait_for_suback = {mqtt.client._kamio_wait_for_suback}")
     print(f"  client._kamio_wait_for_unsuback = {mqtt.client._kamio_wait_for_unsuback}")
 
-    # ПОДВОХ: это приватные атрибуты gmqtt, которые могут измениться
-    print("  ВНИМАНИЕ: приватные атрибуты gmqtt могут измениться в новой версии")
+    # ПОДВОХ: _kamio_* — контракт Kamio, стабилен; полагаться на приватные
+    # атрибуты gmqtt (_reconnect_delay и пр.) нельзя — их нет в 0.8.
+    print("  ВНИМАНИЕ: не полагайтесь на приватные атрибуты gmqtt — используйте")
+    print("  публичные reconnect_delay / reconnect_retries")
 
-    print("  OK: monkey-patching проверен")
+    print("  OK: gmqtt adapter contract проверен")
 
 
 # ============================================================================
 # 5. reconnect_retries=0 означает бесконечные попытки
 # ============================================================================
 
+
 async def demo_reconnect_zero_unlimited():
-    """reconnect_retries=0 → бесконечные попытки reconnect (gmqtt convention)."""
-    print("\n--- 5. reconnect_retries=0 = бесконечные попытки ---")
+    """reconnect_retries=-1 → бесконечные попытки; backoff растёт x2 до max."""
+    print("\n--- 5. reconnect_retries=-1 = бесконечные попытки ---")
 
     from kamio.core.mqtt_connection import MqttConnection
 
-    mqtt = MqttConnection("mqtt://localhost:1883", client_id="test")
+    mqtt = MqttConnection(
+        "mqtt://localhost:1883",
+        client_id="test",
+        reconnect_min_delay=1,
+        reconnect_max_delay=8,
+    )
 
-    # gmqtt convention: _reconnect_retries=0 означает БЕСКОНЕЧНЫЕ попытки
-    assert mqtt.client._reconnect_retries == 0, "0 = unlimited retries"
-    print(f"  _reconnect_retries = {mqtt.client._reconnect_retries} (0 = БЕСКОНЕЧНО)")
+    # gmqtt 0.8 convention: -1 (UNLIMITED_RECONNECTS) = бесконечные попытки,
+    # 0 = reconnect выключен.  Kamio выставляет -1.
+    assert mqtt.client.reconnect_retries == -1, "-1 = unlimited retries"
+    print(f"  reconnect_retries = {mqtt.client.reconnect_retries} (-1 = БЕСКОНЕЧНО)")
 
-    # НЕПРАВИЛЬНО: думать, что 0 = "не пытаться переподключиться"
-    # ПРАВИЛЬНО: 0 = "пытаться вечно"
-    print("  НЕПРАВИЛЬНО: думать, что 0 = 'не переподключаться'")
-    print("  ПРАВИЛЬНО: 0 = 'бесконечные попытки с экспоненциальным backoff'")
+    # Экспоненциальный backoff: note_disconnected() удваивает задержку до max,
+    # note_connected() сбрасывает её на минимум.
+    assert mqtt.client.reconnect_delay == 1
+    mqtt.note_disconnected()
+    assert mqtt.client.reconnect_delay == 2, f"delay удвоен: {mqtt.client.reconnect_delay}"
+    mqtt.note_disconnected()
+    mqtt.note_disconnected()
+    mqtt.note_disconnected()
+    assert mqtt.client.reconnect_delay == 8, "delay ограничен max=8"
+    mqtt.note_connected()
+    assert mqtt.client.reconnect_delay == 1, "delay сброшен на min после connect"
+    print("  backoff: 1 → 2 → 4 → 8 (cap) → сброс в 1 после connect")
 
-    print("  OK: reconnect_retries=0 = unlimited проверен")
+    # НЕПРАВИЛЬНО: думать, что 0 = 'бесконечные попытки' (старые версии gmqtt)
+    # ПРАВИЛЬНО: -1 = бесконечно, 0 = reconnect отключён
+    print("  НЕПРАВИЛЬНО: думать, что 0 = 'бесконечные попытки'")
+    print("  ПРАВИЛЬНО: -1 = бесконечно (0 = reconnect выключен)")
+
+    print("  OK: reconnect_retries=-1 = unlimited проверен")
 
 
 # ============================================================================
 # 6. Empty client_id → random ID
 # ============================================================================
+
 
 async def demo_empty_client_id():
     """client_id=None → "" → gmqtt генерирует случайный ID."""
@@ -325,14 +366,17 @@ async def demo_empty_client_id():
 # 7. BaseNode.start() silent if already running
 # ============================================================================
 
+
 async def demo_start_silent_if_running():
     """start() молча возвращает None, если _is_running=True."""
     print("\n--- 7. BaseNode.start() silent if already running ---")
 
     mqtt = MockMqttClient()
+
     # Устанавливаем adapter methods
     async def _noop_wait(mid, timeout=10.0):
         pass
+
     mqtt._kamio_wait_for_suback = _noop_wait
     mqtt._kamio_wait_for_unsuback = _noop_wait
 
@@ -362,9 +406,10 @@ async def demo_start_silent_if_running():
 # 8. _is_running=True even if subscriptions failed
 # ============================================================================
 
+
 async def demo_running_flag_despite_failed_subs():
-    """_is_running=True даже если подписки не удались."""
-    print("\n--- 8. _is_running=True даже при неудачных подписках ---")
+    """start() бросает ошибку при неудачных подписках — узел НЕ запускается."""
+    print("\n--- 8. start() fails при неудачных подписках ---")
 
     # MQTT клиент, у которого subscribe падает
     class FailingMqttClient(MockMqttClient):
@@ -372,31 +417,35 @@ async def demo_running_flag_despite_failed_subs():
             raise RuntimeError("Broker refused subscription")
 
     mqtt = FailingMqttClient()
+
     async def _noop_wait(mid, timeout=10.0):
         pass
+
     mqtt._kamio_wait_for_suback = _noop_wait
     mqtt._kamio_wait_for_unsuback = _noop_wait
 
     node = BaseNode("device1", mqtt)
-    await node.start()
 
-    # ПОДВОХ: _is_running=True, хотя НИ ОДНА подписка не удалась!
-    assert node._is_running is True, "_is_running=True даже при неудачных подписках"
-    assert len(mqtt._subscriptions) == 0, "Ни одна подписка не установлена"
-    print("  _is_running=True, но подписок НЕТ (все упали)")
-    print("  ВНИМАНИЕ: node 'работает', но не получает сообщения!")
+    # _subscribe_to_topics пробует ВСЕ топики, отписывает успешные
+    # (rollback частичных подписок) и пробрасывает первую ошибку.
+    with pytest.raises(RuntimeError, match="Broker refused"):
+        await node.start()
 
-    # ПРАВИЛЬНЫЙ ПОДХОД: проверять подписки после start()
-    if node._is_running and not mqtt._subscriptions:
-        print("  ПРАВИЛЬНО: проверять фактические подписки, а не только _is_running")
+    # _is_running остаётся False — узел не «полуработает».
+    assert node._is_running is False, "_is_running=False при неудачном start()"
+    assert len(mqtt._subscriptions) == 0, "Подписки откачены (rollback)"
+    print("  start() упал: RuntimeError('Broker refused subscription')")
+    print("  _is_running=False, частичные подписки откачены")
+    print("  ПРАВИЛЬНО: ошибка start() видна вызывающему — узел не 'работает'")
+    print("            молча без подписок")
 
-    await node.stop()
-    print("  OK: _is_running despite failed subs проверен")
+    print("  OK: start() failure propagates проверен")
 
 
 # ============================================================================
 # 9. on() silently replaces handlers
 # ============================================================================
+
 
 async def demo_on_replaces_handlers():
     """on() ЗАМЕНЯЕТ handler, а не добавляет — повторный on() перезаписывает."""
@@ -442,13 +491,16 @@ async def demo_on_replaces_handlers():
 # 10. Target fallback: target or source (routing loops)
 # ============================================================================
 
+
 async def demo_target_fallback_routing():
     """_build_topic: target or source — если target не задан, сообщение идёт на source."""
     print("\n--- 10. Target fallback: target or source ---")
 
     mqtt = MockMqttClient()
+
     async def _noop_wait(mid, timeout=10.0):
         pass
+
     mqtt._kamio_wait_for_suback = _noop_wait
     mqtt._kamio_wait_for_unsuback = _noop_wait
     node = BaseNode("device1", mqtt)
@@ -479,6 +531,7 @@ async def demo_target_fallback_routing():
 # ============================================================================
 # 11. Publish swallows RuntimeError with "shutdown"/"closed"
 # ============================================================================
+
 
 async def demo_publish_swallows_runtime_error():
     """publish_raw глотает RuntimeError с 'shutdown' или 'closed' в сообщении."""
@@ -534,13 +587,16 @@ async def demo_publish_swallows_runtime_error():
 # 12. DeviceNode: handler exception → message lost
 # ============================================================================
 
+
 async def demo_device_node_handler_exception():
     """DeviceNode: исключение в handler → сообщение потеряно (логируется)."""
     print("\n--- 12. DeviceNode: handler exception → message lost ---")
 
     mqtt = MockMqttClient()
+
     async def _noop_wait(mid, timeout=10.0):
         pass
+
     mqtt._kamio_wait_for_suback = _noop_wait
     mqtt._kamio_wait_for_unsuback = _noop_wait
 
@@ -581,13 +637,16 @@ async def demo_device_node_handler_exception():
 # 13. DeviceNode on_stop raises → super().stop() never called
 # ============================================================================
 
+
 async def demo_on_stop_raises_super_never_called():
-    """DeviceNode.stop(): on_stop() ДО super().stop() — если on_stop падает, stop не вызывается."""
-    print("\n--- 13. DeviceNode on_stop raises → super().stop() never called ---")
+    """DeviceNode.stop(): падение on_stop() логируется, super().stop() всё равно вызывается."""
+    print("\n--- 13. DeviceNode on_stop raises → stop() still completes ---")
 
     mqtt = MockMqttClient()
+
     async def _noop_wait(mid, timeout=10.0):
         pass
+
     mqtt._kamio_wait_for_suback = _noop_wait
     mqtt._kamio_wait_for_unsuback = _noop_wait
 
@@ -608,45 +667,29 @@ async def demo_on_stop_raises_super_never_called():
 
     # Устанавливаем handler с device
     from kamio.core.handlers import DeviceHandler
+
     # Не создаём полный handler — просто установим device на node
     mock_handler = MagicMock()
     mock_handler.device = device
     node.set_handler(mock_handler)
 
-    # DeviceNode.stop() вызывает device.on_stop(self) ПЕРЕД super().stop()
-    # Если on_stop падает, super().stop() НЕ вызывается
-    try:
-        await node.stop()
-        assert False, "stop() должен был упасть от on_stop"
-    except RuntimeError as e:
-        assert "on_stop crashed" in str(e)
-        print(f"  DeviceNode.stop() → on_stop() упал: {e}")
-        print("  super().stop() НИКОГДА не вызван → подписки НЕ отписаны!")
+    # DeviceNode.stop() оборачивает device.on_stop(self) в try/except:
+    # ошибка хука логируется, но super().stop() ВСЕГДА выполняется —
+    # подписки отписываются и узел останавливается корректно.
+    await node.stop()  # не бросает — ошибка только в логе
 
-    # Проверяем: _is_running всё ещё True (super().stop() не выполнился)
-    assert node._is_running is True, "_is_running должен быть True (super().stop() не вызван)"
-    print(f"  _is_running = {node._is_running} (super().stop() не вызван)")
+    assert node._is_running is False, "stop() выполнен полностью — узел остановлен"
+    print("  on_stop() упал → ошибка залогирована, super().stop() выполнен")
+    print(f"  _is_running = {node._is_running} (узел остановлен корректно)")
+    print("  ПРАВИЛЬНО: падающий on_stop не может оставить узел 'полуработающим'")
 
-    # ПРАВИЛЬНЫЙ ПОДХОД: on_stop должен быть безопасным
-    class SafeDevice(Device):
-        power: bool = state(default=False, writable=True)
-
-        async def on_stop(self, node):
-            try:
-                # Код очистки, который может упасть
-                pass
-            except Exception as e:
-                self.logger.error(f"on_stop error (non-fatal): {e}")
-            # Не re-raise — позволить super().stop() выполниться
-
-    print("  ПРАВИЛЬНО: on_stop должен ловить свои ошибки, не re-raise")
-
-    print("  OK: on_stop raises → super().stop() never called проверен")
+    print("  OK: on_stop failure → stop() completes проверен")
 
 
 # ============================================================================
 # 14. Invalid envelopes silently dropped
 # ============================================================================
+
 
 async def demo_invalid_envelope_silently_dropped():
     """Envelope.from_json возвращает None для невалидного JSON — сообщение отбрасывается."""
@@ -667,7 +710,9 @@ async def demo_invalid_envelope_silently_dropped():
     # source будет "" — но envelope создаётся
     assert result2 is not None, "from_json с минимальными полями создаёт envelope"
     assert result2.source == ""
-    print(f"  from_json('{{\"type\": \"dt\"}}') → source='{result2.source}' (создаётся с пустым source)")
+    print(
+        f"  from_json('{{\"type\": \"dt\"}}') → source='{result2.source}' (создаётся с пустым source)"
+    )
 
     # Невалидный тип → UNKNOWN
     result3 = Envelope.from_json('{"source": "dev1", "type": "INVALID_TYPE", "data": {}}')
@@ -685,6 +730,7 @@ async def demo_invalid_envelope_silently_dropped():
 # ============================================================================
 # 15. Unknown message types: DEBUG only
 # ============================================================================
+
 
 async def demo_unknown_message_type_debug_only():
     """Неизвестные типы сообщений логируются только на DEBUG уровне."""
@@ -721,6 +767,7 @@ async def demo_unknown_message_type_debug_only():
 # ============================================================================
 # Main
 # ============================================================================
+
 
 async def main():
     print("=" * 70)

@@ -18,12 +18,15 @@
 Предварительно запустите MQTT-брокер на localhost:1883
 (например, ``docker run -p 1883:1883 eclipse-mosquitto``).
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
 from typing import Any, Dict, Optional
+
+from _bounded import run_bounded
 
 from kamio import KamioApp, Device, command, state, telemetry
 from kamio.drivers.base import BaseDriver
@@ -39,6 +42,7 @@ logger = logging.getLogger("telemetry_demo")
 # =====================================================================
 # Псевдо-драйвер: имитирует аппаратный датчик
 # =====================================================================
+
 
 class FakeSensorDriver(BaseDriver):
     """Драйвер-имитатор, возвращающий случайные значения датчиков.
@@ -102,6 +106,7 @@ class FakeSensorDriver(BaseDriver):
 # Устройство 1: датчик среды с автоматической телеметрией
 # =====================================================================
 
+
 class EnvironmentSensor(Device):
     """Датчик окружающей среды с автоматической телеметрией.
 
@@ -163,6 +168,7 @@ class EnvironmentSensor(Device):
 # =====================================================================
 # Устройство 2: датчик CO2 с переопределённым handle_telemetry_update
 # =====================================================================
+
 
 class CO2Sensor(Device):
     """Датчик CO2 с кастомной логикой сбора телеметрии.
@@ -232,6 +238,7 @@ class CO2Sensor(Device):
 # Устройство 3: телеметрия отключена через enable_telemetry
 # =====================================================================
 
+
 class DisabledTelemetryDevice(Device):
     """Устройство с отключённой телеметрией.
 
@@ -269,16 +276,16 @@ class DisabledTelemetryDevice(Device):
 # Подписчик на события телеметрии для логирования
 # =====================================================================
 
+
 async def on_command_executed(data: Dict[str, Any]) -> None:
     """Логирование выполнения команд (встроенное событие)."""
-    logger.info(
-        f"[command] {data['device_id']}.{data['command']} -> {data['result']}"
-    )
+    logger.info(f"[command] {data['device_id']}.{data['command']} -> {data['result']}")
 
 
 # =====================================================================
 # Главный цикл
 # =====================================================================
+
 
 async def main():
     app = KamioApp(mqtt_broker="mqtt://localhost:1883", client_id="telemetry_demo")
@@ -320,10 +327,12 @@ async def main():
     logger.info("=== Ручная публикация через publish_telemetry() ===")
 
     # Публикуем телеметрию вручную (вне графика автоматической публикации)
-    await env_sensor.publish_telemetry({
-        "temperature": 25.3,
-        "humidity": 50.1,
-    })
+    await env_sensor.publish_telemetry(
+        {
+            "temperature": 25.3,
+            "humidity": 50.1,
+        }
+    )
     logger.info("Ручная публикация env_sensor: temperature=25.3°C, humidity=50.1%")
 
     await asyncio.sleep(1)
@@ -532,12 +541,20 @@ class MultiFreqDevice(Device):
     """
 
     # Группа 5s — публикуются вместе
-    fast_sensor_1: float = telemetry(default=0.0, unit="°C", freq="5s", description="Быстрый датчик 1")
-    fast_sensor_2: float = telemetry(default=0.0, unit="%", freq="5s", description="Быстрый датчик 2")
+    fast_sensor_1: float = telemetry(
+        default=0.0, unit="°C", freq="5s", description="Быстрый датчик 1"
+    )
+    fast_sensor_2: float = telemetry(
+        default=0.0, unit="%", freq="5s", description="Быстрый датчик 2"
+    )
 
     # Группа 30s — публикуются вместе
-    slow_sensor_1: float = telemetry(default=0.0, unit="hPa", freq="30s", description="Медленный датчик 1")
-    slow_sensor_2: float = telemetry(default=0.0, unit="lux", freq="30s", description="Медленный датчик 2")
+    slow_sensor_1: float = telemetry(
+        default=0.0, unit="hPa", freq="30s", description="Медленный датчик 1"
+    )
+    slow_sensor_2: float = telemetry(
+        default=0.0, unit="lux", freq="30s", description="Медленный датчик 2"
+    )
 
     # Группа 1m (60s) — публикуются вместе
     rare_sensor: float = telemetry(default=0.0, unit="Wh", freq="1m", description="Редкий датчик")
@@ -559,7 +576,7 @@ class NaNFilterDevice(Device):
     async def set_nan_values(self):
         """Устанавливает NaN и None для демонстрации фильтрации."""
         # NaN не будет опубликован (val != val → True для NaN)
-        self.sensor_b = float('nan')
+        self.sensor_b = float("nan")
         logger.info(f"sensor_b установлен в NaN: {self.sensor_b}")
 
         # None также не будет опубликован
@@ -595,6 +612,7 @@ class NaNFilterDevice(Device):
 # =====================================================================
 # Демонстрация: телеметрия с min/max валидацией
 # =====================================================================
+
 
 async def demo_telemetry_validation(app: KamioApp):
     """Показывает min/max валидацию для телеметрии."""
@@ -632,6 +650,7 @@ async def demo_telemetry_validation(app: KamioApp):
 # Демонстрация: handle_telemetry_update override
 # =====================================================================
 
+
 async def demo_custom_telemetry_update(app: KamioApp):
     """Показывает кастомный сбор телеметрии через handle_telemetry_update."""
     logger.info("=== Демонстрация: handle_telemetry_update override ===")
@@ -656,6 +675,7 @@ async def demo_custom_telemetry_update(app: KamioApp):
 # =====================================================================
 # Демонстрация: read_telemetry_value из драйвера
 # =====================================================================
+
 
 async def demo_driver_read(app: KamioApp):
     """Показывает чтение телеметрии из драйвера."""
@@ -690,6 +710,7 @@ async def demo_driver_read(app: KamioApp):
 # Демонстрация: группировка полей по частоте
 # =====================================================================
 
+
 async def demo_freq_grouping(app: KamioApp):
     """Показывает группировку полей телеметрии по частоте."""
     logger.info("=== Демонстрация: группировка полей по частоте ===")
@@ -721,6 +742,7 @@ async def demo_freq_grouping(app: KamioApp):
 # Демонстрация: _get_min_freq из конфига
 # =====================================================================
 
+
 async def demo_min_freq_config(app: KamioApp):
     """Показывает минимальную частоту телеметрии из конфига."""
     logger.info("=== Демонстрация: _get_min_freq из конфига ===")
@@ -743,6 +765,7 @@ async def demo_min_freq_config(app: KamioApp):
 
     # Демонстрация: parse_freq для различных форматов
     from kamio.data_fields import parse_freq
+
     logger.info("\nparse_freq() — парсинг строк частоты:")
     test_freqs = ["500ms", "5s", "10s", "30s", "1m", "2m", 10, 0.5, None, ""]
     for freq in test_freqs:
@@ -753,6 +776,7 @@ async def demo_min_freq_config(app: KamioApp):
 # =====================================================================
 # Демонстрация: NaN фильтрация
 # =====================================================================
+
 
 async def demo_nan_filtering(app: KamioApp):
     """Показывает фильтрацию NaN и None в телеметрии."""
@@ -783,6 +807,7 @@ async def demo_nan_filtering(app: KamioApp):
 # =====================================================================
 # Демонстрация: get_telemetry_snapshot
 # =====================================================================
+
 
 async def demo_telemetry_snapshot(app: KamioApp):
     """Показывает получение снимка телеметрии."""
@@ -823,6 +848,7 @@ async def demo_telemetry_snapshot(app: KamioApp):
 # =====================================================================
 # Расширенная главная функция с дополнительными демонстрациями
 # =====================================================================
+
 
 async def extended_main():
     """Запускает базовую демонстрацию телеметрии плюс все дополнительные секции."""
@@ -893,4 +919,4 @@ async def extended_main():
 
 
 if __name__ == "__main__":
-    asyncio.run(extended_main())
+    run_bounded(extended_main())

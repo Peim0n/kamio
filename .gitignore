@@ -36,3 +36,7 @@ dist/
 .DS_Store
 Thumbs.db
 
+
+# Runtime artifacts produced by examples
+kamio_events.log
+examples/hot_reload_demo_files/

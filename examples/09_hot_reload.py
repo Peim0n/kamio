@@ -21,6 +21,7 @@
     3. Сохраните файл — фреймворк автоматически перезагрузит правила
     4. Отредактируйте config.json — конфигурация будет перезагружена
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +29,8 @@ import json
 import logging
 import os
 from typing import Any, Dict
+
+from _bounded import run_bounded
 
 from kamio import KamioApp, Device, state
 
@@ -46,6 +49,7 @@ DEMO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hot_reload_
 # Устройство для демонстрации
 # =====================================================================
 
+
 class CounterDevice(Device):
     """Простой счётчик для демонстрации горячего обновления правил."""
 
@@ -56,6 +60,7 @@ class CounterDevice(Device):
 # =====================================================================
 # Создание демонстрационных файлов
 # =====================================================================
+
 
 def create_demo_files():
     """Создаёт файлы правил и конфигурации для демонстрации.
@@ -114,6 +119,7 @@ async def on_count_change(event: RuleEvent, app):
 # Кастомный обработчик для перезагрузки конфигурации
 # =====================================================================
 
+
 async def on_config_changed(file_path: str) -> None:
     """Кастомный обработчик изменения конфигурации.
 
@@ -131,6 +137,7 @@ async def on_config_changed(file_path: str) -> None:
 # =====================================================================
 # Подписчики на события Hot Reload через EventBus
 # =====================================================================
+
 
 async def on_hot_reload_rules(data: Dict[str, Any]) -> None:
     """Событие hot_reload_rules — публикуется после успешной перезагрузки правил.
@@ -152,14 +159,13 @@ async def on_hot_reload_error(data: Dict[str, Any]) -> None:
         - file_path: путь к файлу, вызвавшему ошибку
         - error:     строка ошибки
     """
-    logger.error(
-        f"[EVENT] Ошибка hot reload: {data.get('file_path')}: {data.get('error')}"
-    )
+    logger.error(f"[EVENT] Ошибка hot reload: {data.get('file_path')}: {data.get('error')}")
 
 
 # =====================================================================
 # Главный цикл
 # =====================================================================
+
 
 async def main():
     # --- Создаём демонстрационные файлы ---
@@ -271,6 +277,7 @@ async def main():
 # Демонстрация: reload_devices_from_file — перезагрузка классов устройств
 # =====================================================================
 
+
 async def demo_reload_devices(app):
     """Показывает использование reload_devices_from_file().
 
@@ -327,6 +334,7 @@ class ReloadableDevice(Device):
 # Демонстрация: reload_config_from_file — перезагрузка конфигурации
 # =====================================================================
 
+
 async def demo_reload_config(app, config_path):
     """Показывает использование reload_config_from_file().
 
@@ -357,6 +365,7 @@ async def demo_reload_config(app, config_path):
 # Демонстрация: hot_reload_error event — событие ошибки перезагрузки
 # =====================================================================
 
+
 async def demo_hot_reload_error_event(app):
     """Показывает публикацию события hot_reload_error при ошибке.
 
@@ -383,6 +392,7 @@ async def demo_hot_reload_error_event(app):
 
     # Пытаемся перезагрузить файл с ошибкой
     from kamio.core.hot_reload import reload_rules_from_file
+
     success = await reload_rules_from_file(bad_file, app)
     logger.info(f"reload_rules_from_file для bad_rules.py вернул: {success} (ожидается False)")
     logger.info(f"Ошибки перехвачены: {len(error_received)}")
@@ -397,6 +407,7 @@ async def demo_hot_reload_error_event(app):
 # =====================================================================
 # Демонстрация: debounce настройка
 # =====================================================================
+
 
 def demo_debounce_config():
     """Показывает настройку debounce в HotReloadManager.
@@ -432,6 +443,7 @@ def demo_debounce_config():
 # Демонстрация: list_watched — список отслеживаемых файлов
 # =====================================================================
 
+
 def demo_list_watched(app):
     """Показывает использование list_watched().
 
@@ -458,6 +470,7 @@ def demo_list_watched(app):
 # Демонстрация: is_enabled property — проверка статуса
 # =====================================================================
 
+
 def demo_is_enabled(app):
     """Показывает использование свойства is_enabled.
 
@@ -482,4 +495,4 @@ def demo_is_enabled(app):
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_bounded(main())
