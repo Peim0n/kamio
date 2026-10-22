@@ -16,20 +16,32 @@ class MqttDispatchMixin:
     _loop: Optional[asyncio.AbstractEventLoop]
 
     def _run_coro_threadsafe(self: Any, coro) -> None:
-        """Schedule a coroutine on the running event loop."""
+        """Schedule a coroutine on the running event loop.
+
+        Background task exceptions are consumed and logged so a failing
+        coroutine never surfaces as an unretrieved-task warning.
+        """
         if self._loop is None or not self._loop.is_running():
+            coro.close()
             return
 
         try:
             task = self._loop.create_task(coro)
         except RuntimeError:
+            coro.close()
             return
         tasks: Optional[set] = getattr(self, "_mqtt_bg_tasks", None)
         if tasks is None:
             tasks = set()
             self._mqtt_bg_tasks: set = tasks
         tasks.add(task)
-        task.add_done_callback(tasks.discard)
+
+        def _consume(done: asyncio.Task) -> None:
+            tasks.discard(done)
+            if not done.cancelled() and (exc := done.exception()) is not None:
+                logger.error(f"MQTT background task failed: {exc}")
+
+        task.add_done_callback(_consume)
 
     def _publish_event_threadsafe(self: Any, event_type: str, data: Dict[str, Any]) -> None:
         """Publish an event bus event from a non-asyncio (MQTT) thread if the loop is running."""
@@ -45,9 +57,15 @@ class MqttDispatchMixin:
                 tasks = set()
                 self._bg_tasks: set = tasks
             tasks.add(task)
-            task.add_done_callback(tasks.discard)
+
+            def _consume(done: asyncio.Task) -> None:
+                tasks.discard(done)
+                if not done.cancelled() and (exc := done.exception()) is not None:
+                    logger.error(f"Background task failed: {exc}")
+
+            task.add_done_callback(_consume)
         except RuntimeError:
-            pass
+            coro.close()
 
     def _on_mqtt_connect(self: Any, client, flags, rc, properties=None):
         """gmqtt on_connect callback.
@@ -72,11 +90,14 @@ class MqttDispatchMixin:
                     "rc": reason,
                 },
             )
-            # Re-subscribe all nodes on (re)connect.  With clean_session=True
+            # Re-subscribe all nodes on reconnect.  With clean_session=True
             # the broker drops subscriptions on disconnect, so we must restore
-            # them.  With clean_session=False this is a harmless no-op (gmqtt
-            # deduplicates subscriptions by topic).
-            self._resubscribe_all_nodes()
+            # them.  Skipped during the initial connect (the app is not marked
+            # running yet — start() subscribes everything itself).
+            if self._is_running:
+                self._resubscribe_all_nodes()
+            # Custom nodes manage their own subscriptions and hooks.
+            self._run_coro_threadsafe(self.custom_nodes.on_connect())
         except Exception as e:
             logger.exception(f"Error in _on_mqtt_connect: {e}")
 
@@ -89,15 +110,33 @@ class MqttDispatchMixin:
                 # Exponential backoff for the next reconnect attempt.
                 conn.note_disconnected()
             self._publish_event_threadsafe("mqtt_disconnected", {"rc": reason})
+            self._run_coro_threadsafe(self.custom_nodes.on_disconnect())
         except Exception as e:
             logger.exception(f"Error in _on_mqtt_disconnect: {e}")
+
+    async def _subscribe_broadcast(self: Any) -> None:
+        """Subscribe the shared broadcast wildcard once for the whole app.
+
+        The app owns ``Kamio/v1/all/#`` on its MQTT client; device and
+        server nodes skip it (see ``_kamio_broadcast_owned``) so stopping a
+        single node can never remove broadcasts for the others.  Called on
+        start and after every reconnect.
+        """
+        mid = self.mqtt_client.subscribe(
+            f"{mqtt_topics.BASE}/{BROADCAST_ID}/#", qos=1
+        )
+        waiter = getattr(self.mqtt_client, "_kamio_wait_for_suback", None)
+        if waiter is not None:
+            await waiter(mid)
 
     def _resubscribe_all_nodes(self: Any) -> None:
         """Re-subscribe the server node and all device nodes after a reconnect.
 
         Running nodes get ``_resubscribe()`` scheduled, which restores
         subscriptions without touching lifecycle hooks or the running flag.
+        The app-owned broadcast wildcard is restored alongside them.
         """
+        self._run_coro_threadsafe(self._subscribe_broadcast())
         for node in [self.server_node] + list(self._device_nodes.values()):
             if not node.is_running:
                 continue

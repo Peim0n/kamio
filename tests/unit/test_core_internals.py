@@ -644,19 +644,28 @@ class TestBaseNode:
 
     @pytest.mark.asyncio
     async def test_start_handles_subscribe_error(self, mock_mqtt):
+        """A subscribe failure propagates and the node is not marked running."""
         mock_mqtt.subscribe = MagicMock(side_effect=RuntimeError("sub fail"))
         node = BaseNode("dev1", mock_mqtt)
-        await node.start()
-        assert node.is_running is True
+        with pytest.raises(RuntimeError, match="sub fail"):
+            await node.start()
+        assert node.is_running is False
 
     @pytest.mark.asyncio
     async def test_stop_unsubscribes(self, mock_mqtt):
+        """stop() unsubscribes both node topics on an unowned client.
+
+        A standalone node's client is not marked ``_kamio_broadcast_owned``,
+        so the node itself owns (and therefore releases) the broadcast
+        wildcard.  App-owned clients keep it — see
+        ``test_remove_device_keeps_broadcast_for_others`` (SCAN-12).
+        """
         node = BaseNode("dev1", mock_mqtt)
         await node.start()
         await node.stop()
         assert node.is_running is False
         unsub = [t for (t,) in mock_mqtt.unsubscribed]
-        assert f"Kamio/v1/dev1/#" in unsub
+        assert "Kamio/v1/dev1/#" in unsub
         assert f"Kamio/v1/{BROADCAST_ID}/#" in unsub
 
     @pytest.mark.asyncio

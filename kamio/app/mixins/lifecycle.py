@@ -61,12 +61,18 @@ class LifecycleMixin:
 
         Handles ``SIGINT`` / ``SIGTERM`` for graceful shutdown.
         """
+        coro = self._run_async()
         try:
-            asyncio.run(self._run_async())
+            asyncio.run(coro)
         except (KeyboardInterrupt, SystemExit):
             logger.info("Application interrupted")
         except Exception as e:
             logger.exception(f"Application crashed: {e}")
+        finally:
+            # asyncio.run() may fail before ever scheduling the coroutine
+            # (e.g. a loop is already running) — close it to avoid
+            # "coroutine was never awaited" warnings.
+            coro.close()
 
     async def start(self: Any):
         """Start the application: connect to MQTT broker and initialize all nodes."""
@@ -87,6 +93,8 @@ class LifecycleMixin:
             await self._mqtt_conn.connect()
 
         await self.server_node.start()
+        # The app owns the shared broadcast wildcard for this client.
+        await self._subscribe_broadcast()
 
         # Snapshot device nodes so concurrent add/remove does not mutate the
         # dict while we iterate during startup.

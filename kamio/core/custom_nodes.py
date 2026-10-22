@@ -38,7 +38,8 @@ class CustomNode(ABC):
         """
         self.mqtt_client = mqtt_client
         self.topic_prefix = topic_prefix.rstrip("/")
-        self._subscriptions: List[str] = []
+        # topic -> qos; kept so subscriptions can be restored on reconnect.
+        self._subscriptions: Dict[str, int] = {}
         self._is_running: bool = False
         self.logger = logging.getLogger(f"Kamio.node.{self.__class__.__name__}")
 
@@ -68,7 +69,7 @@ class CustomNode(ABC):
 
     def _teardown_subscriptions(self) -> None:
         """Unsubscribe from all topics and mark the node as stopped."""
-        for topic in self._subscriptions:
+        for topic in list(self._subscriptions):
             try:
                 self.mqtt_client.unsubscribe(topic)
             except Exception as e:
@@ -129,13 +130,13 @@ class CustomNode(ABC):
         """
         full_topic = self._resolve_topic(topic, absolute=False)
         self.mqtt_client.subscribe(full_topic, qos)
-        self._subscriptions.append(full_topic)
+        self._subscriptions[full_topic] = qos
         self.logger.debug(f"Subscribed: {full_topic}")
 
     def subscribe_absolute(self, topic: str, qos: int = 0) -> None:
         """Subscribe to an absolute topic (no prefix prepended)."""
         self.mqtt_client.subscribe(topic, qos)
-        self._subscriptions.append(topic)
+        self._subscriptions[topic] = qos
         self.logger.debug(f"Subscribed (absolute): {topic}")
 
     def publish(self, topic: str, payload: Any, qos: int = 0, retain: bool = False) -> None:
@@ -305,6 +306,48 @@ class CustomNodeManager:
                 )
             except Exception as e:
                 logger.error(f"Failed to stop custom node '{name}': {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Reconnection
+    # ------------------------------------------------------------------
+
+    async def on_connect(self) -> None:
+        """Restore subscriptions and fire ``on_connect`` hooks after (re)connect.
+
+        With ``clean_session=True`` the broker drops subscriptions on
+        disconnect, so every running node's topics must be re-subscribed.
+        The node's own ``on_connect`` hook runs after its subscriptions
+        are restored.
+        """
+        for name, node in list(self._nodes.items()):
+            if not node.is_running:
+                continue
+            for topic, qos in list(node._subscriptions.items()):
+                try:
+                    node.mqtt_client.subscribe(topic, qos)
+                except Exception as e:
+                    node.logger.error(
+                        f"Failed to re-subscribe '{name}' to {topic}: {e}", exc_info=True
+                    )
+            try:
+                await node.on_connect()
+            except Exception as e:
+                logger.error(
+                    f"on_connect hook failed for custom node '{name}': {e}", exc_info=True
+                )
+
+    async def on_disconnect(self) -> None:
+        """Fire ``on_disconnect`` hooks for all running nodes."""
+        for name, node in list(self._nodes.items()):
+            if not node.is_running:
+                continue
+            try:
+                await node.on_disconnect()
+            except Exception as e:
+                logger.error(
+                    f"on_disconnect hook failed for custom node '{name}': {e}",
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------------
     # Message routing

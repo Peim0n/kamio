@@ -69,13 +69,13 @@ def test_teardown_subscriptions_logs_and_clears_on_unsubscribe_error(mock_mqtt_c
     """Teardown clears subscriptions and state even when unsubscribe fails."""
     mock_mqtt_client.unsubscribe.side_effect = RuntimeError("unsubscribe failed")
     node = BridgeNode(mock_mqtt_client, "bridge")
-    node._subscriptions.append("bridge/cmd/#")
+    node._subscriptions["bridge/cmd/#"] = 0
     node._is_running = True
 
     with caplog.at_level("WARNING"):
         node._teardown_subscriptions()
 
-    assert node._subscriptions == []
+    assert node._subscriptions == {}
     assert node.is_running is False
     assert "Failed to unsubscribe from bridge/cmd/#" in caplog.text
 
@@ -122,13 +122,13 @@ async def test_unregister_running_node_no_loop_clears_on_unsubscribe_error(mock_
     app = KamioApp()
     node = BridgeNode(mock_mqtt_client, "bridge")
     app.register_custom_node("bridge", node)
-    node._subscriptions.append("bridge/cmd/#")
+    node._subscriptions["bridge/cmd/#"] = 0
     node._is_running = True
     app._loop = None  # type: ignore[attr-defined]
 
     app.unregister_custom_node("bridge")
 
-    assert node._subscriptions == []
+    assert node._subscriptions == {}
     assert node.is_running is False
 
 

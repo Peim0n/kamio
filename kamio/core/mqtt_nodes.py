@@ -32,37 +32,90 @@ class BaseNode:
         self._tasks: set[asyncio.Task] = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._is_running = False
+        # True when this node itself subscribed the broadcast wildcard
+        # (i.e. the client is not managed by a KamioApp that owns it).
+        self._owns_broadcast = False
 
     async def start(self):
         """Subscribe to MQTT topics and mark node as running.
 
-        Subscribes to ``Kamio/v1/{device_id}/#`` and the broadcast wildcard
-        ``Kamio/v1/all/#``.
+        Subscribes to ``Kamio/v1/{device_id}/#`` and, when the MQTT client
+        is not app-managed, the broadcast wildcard ``Kamio/v1/all/#``.
+        All topics are attempted; if any subscription fails the first
+        error is re-raised and the node is not marked running, so callers
+        can roll back.
         """
         if self._is_running:
             return
 
         self._loop = asyncio.get_running_loop()
-
-        topics_to_sub = [
-            f"{topics.BASE}/{self.device_id}/#",
-            f"{topics.BASE}/{BROADCAST_ID}/#",
-        ]
-
-        node_logger = getattr(self, "logger", logger)
-        for t in topics_to_sub:
-            try:
-                mid = self.mqtt.subscribe(t, qos=1)
-                await self.mqtt._kamio_wait_for_suback(mid)
-                node_logger.debug(f"Subscribed to: {t}")
-            except Exception as e:
-                node_logger.error(f"Failed to subscribe to {t}: {e}")
+        await self._subscribe_to_topics()
 
         self._is_running = True
         logger.info(f"Node {self.device_id} started successfully")
 
+    def _broadcast_topic(self) -> str:
+        """Return the shared broadcast wildcard topic."""
+        return f"{topics.BASE}/{BROADCAST_ID}/#"
+
+    def _topics_to_subscribe(self) -> list:
+        """Topics this node must subscribe.
+
+        The broadcast wildcard is shared by every node on the client.  When
+        the client is managed by a :class:`KamioApp` (marked via
+        ``_kamio_broadcast_owned``) the app owns that subscription; a
+        standalone node subscribes it itself so it still receives
+        broadcasts.
+        """
+        own = f"{topics.BASE}/{self.device_id}/#"
+        if getattr(self.mqtt, "_kamio_broadcast_owned", False):
+            return [own]
+        return [own, self._broadcast_topic()]
+
+    async def _subscribe_to_topics(self) -> None:
+        """Subscribe the own (and possibly broadcast) topics; raise on error.
+
+        All topics are attempted even when the first subscription fails,
+        then the first error is re-raised so callers can roll back instead
+        of running with a partial subscription.
+        """
+        topics_to_sub = self._topics_to_subscribe()
+        self._owns_broadcast = self._broadcast_topic() in topics_to_sub
+
+        node_logger = getattr(self, "logger", logger)
+        first_error: Optional[Exception] = None
+        for t in topics_to_sub:
+            try:
+                mid = self.mqtt.subscribe(t, qos=1)
+                await self._wait_suback(mid)
+                node_logger.debug(f"Subscribed to: {t}")
+            except Exception as e:
+                node_logger.error(f"Failed to subscribe to {t}: {e}")
+                if first_error is None:
+                    first_error = e
+        if first_error is not None:
+            raise first_error
+
+    async def _wait_suback(self, mid) -> None:
+        """Wait for SUBACK if the client exposes the Kamio ACK adapter."""
+        waiter = getattr(self.mqtt, "_kamio_wait_for_suback", None)
+        if waiter is not None:
+            await waiter(mid)
+
+    async def _wait_unsuback(self, mid) -> None:
+        """Wait for UNSUBACK if the client exposes the Kamio ACK adapter."""
+        waiter = getattr(self.mqtt, "_kamio_wait_for_unsuback", None)
+        if waiter is not None:
+            await waiter(mid)
+
     async def stop(self):
-        """Graceful shutdown: unsubscribe and stop."""
+        """Graceful shutdown: unsubscribe the node's own topics and stop.
+
+        The broadcast wildcard ``Kamio/v1/all/#`` is only unsubscribed
+        when this node subscribed it itself (standalone usage).  On an
+        app-managed client the app owns that subscription, so stopping
+        one node cannot cut broadcasts for the remaining nodes.
+        """
         if not self._is_running:
             return
         cancelled = []
@@ -75,16 +128,16 @@ class BaseNode:
         self._tasks.clear()
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
-        try:
-            mid = self.mqtt.unsubscribe(f"{topics.BASE}/{self.device_id}/#")
-            await self.mqtt._kamio_wait_for_unsuback(mid)
-        except Exception as e:
-            logger.error(f"Failed to unsubscribe from {self.device_id}: {e}")
-        try:
-            mid = self.mqtt.unsubscribe(f"{topics.BASE}/{BROADCAST_ID}/#")
-            await self.mqtt._kamio_wait_for_unsuback(mid)
-        except Exception as e:
-            logger.error(f"Failed to unsubscribe from {BROADCAST_ID}: {e}")
+        topics_to_unsub = [f"{topics.BASE}/{self.device_id}/#"]
+        if self._owns_broadcast:
+            topics_to_unsub.append(self._broadcast_topic())
+            self._owns_broadcast = False
+        for t in topics_to_unsub:
+            try:
+                mid = self.mqtt.unsubscribe(t)
+                await self._wait_unsuback(mid)
+            except Exception as e:
+                logger.error(f"Failed to unsubscribe from {t}: {e}")
         self._is_running = False
         logger.info(f"Node {self.device_id} stopped")
 
@@ -94,22 +147,10 @@ class BaseNode:
         Unlike ``start()`` this does **not** call device lifecycle hooks
         (``on_start``); it only restores MQTT subscriptions and marks the
         node as running. Safe to call while the node is already running.
+        Subscription errors are re-raised so the caller sees the failure.
         """
         self._loop = asyncio.get_running_loop()
-
-        topics_to_sub = [
-            f"{topics.BASE}/{self.device_id}/#",
-            f"{topics.BASE}/{BROADCAST_ID}/#",
-        ]
-
-        node_logger = getattr(self, "logger", logger)
-        for t in topics_to_sub:
-            try:
-                mid = self.mqtt.subscribe(t, qos=1)
-                await self.mqtt._kamio_wait_for_suback(mid)
-                node_logger.debug(f"Re-subscribed to: {t}")
-            except Exception as e:
-                node_logger.error(f"Failed to re-subscribe to {t}: {e}")
+        await self._subscribe_to_topics()
 
         self._is_running = True
         logger.info(f"Node {self.device_id} re-subscribed after reconnect")

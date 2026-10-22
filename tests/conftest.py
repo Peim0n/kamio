@@ -33,6 +33,9 @@ class InMemoryBroker:
         # topic -> set of client_ids
         self._subscriptions: Dict[str, Set[str]] = {}
         self._next_mid = 1
+        # When True, SUBACK/UNSUBACK callbacks are not delivered, simulating a
+        # broker that accepts but never confirms (un)subscribes.
+        self.drop_acks: bool = False
 
     @classmethod
     def get(cls) -> "InMemoryBroker":
@@ -61,7 +64,7 @@ class InMemoryBroker:
         # with partial(cb, client), so the handler must be invoked WITHOUT
         # the client argument: on_subscribe(mid, granted_qoses, properties).
         client = self._clients.get(client_id)
-        if client and client.on_subscribe:
+        if client and client.on_subscribe and not self.drop_acks:
             client.on_subscribe(mid, [0], {})
         return mid
 
@@ -72,9 +75,19 @@ class InMemoryBroker:
         mid = self._next_mid
         self._next_mid += 1
         client = self._clients.get(client_id)
-        if client and client.on_unsubscribe:
+        if client and client.on_unsubscribe and not self.drop_acks:
             client.on_unsubscribe(mid, {})
         return mid
+
+    def drop_subscriptions(self, client_id: str) -> None:
+        """Drop all of a client's subscriptions without unregistering it.
+
+        Mirrors what a real broker does to a ``clean_session`` client on
+        disconnect: the client stays known but must re-subscribe after
+        reconnecting.
+        """
+        for subs in self._subscriptions.values():
+            subs.discard(client_id)
 
     def publish(self, source_id: str, topic: str, payload: Any, qos: int = 0) -> None:
         for sub_topic, subscriber_ids in list(self._subscriptions.items()):
@@ -181,6 +194,30 @@ class _BrokerClient(gmqtt.Client):
         if self.on_message:
             self.on_message(topic, payload, 0, {})
 
+    def simulate_disconnect(self):
+        """Simulate a broker-side disconnect without unregistering the client.
+
+        The client stays registered with the broker but its subscriptions are
+        dropped (clean-session semantics), and the gmqtt ``on_disconnect``
+        callback fires — like a real network drop.
+        """
+        self._connected_flag = False
+        self._broker.drop_subscriptions(self._client_id)
+        if self.on_disconnect:
+            self.on_disconnect(None, None)
+
+    def simulate_reconnect(self):
+        """Simulate reconnecting after :meth:`simulate_disconnect`.
+
+        The client is marked connected again and the gmqtt ``on_connect``
+        callback fires; subscriptions are NOT restored automatically — the
+        application must re-subscribe, which is what the reconnect tests
+        verify.
+        """
+        self._connected_flag = True
+        if self.on_connect:
+            self.on_connect(0, 0, {})
+
 
 class MockGmqttClient(_BrokerClient):
     """gmqtt.Client subclass for testing KamioApp without a broker.
@@ -256,3 +293,24 @@ def _in_memory_broker(monkeypatch):
 @pytest.fixture
 def mock_mqtt():
     return MockGmqttClient()
+
+
+async def wait_until(predicate, timeout: float = 5.0, interval: float = 0.01) -> bool:
+    """Wait until ``predicate()`` is truthy or ``timeout`` seconds elapse.
+
+    Returns True when the predicate was met, False on timeout.  Use instead
+    of fixed ``asyncio.sleep(...)`` to wait for asynchronous results.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()
+
+
+@pytest.fixture
+def wait_until_fixture():
+    """Expose :func:`wait_until` as a fixture for tests that prefer it."""
+    return wait_until

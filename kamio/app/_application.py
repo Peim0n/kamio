@@ -185,6 +185,11 @@ class KamioApp(
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
 
+        # The app owns the shared broadcast subscription for this client:
+        # nodes skip Kamio/v1/all/# and only manage their own topics, so
+        # stopping one node cannot unsubscribe broadcasts for the others.
+        self.mqtt_client._kamio_broadcast_owned = True  # type: ignore[attr-defined]
+
         self._device_nodes: Dict[str, DeviceNode] = {}
         self._device_nodes_lock = threading.RLock()
         self._is_running = False

@@ -313,18 +313,154 @@ async def test_on_mqtt_disconnect(mock_mqtt):
 
 @pytest.mark.asyncio
 async def test_on_mqtt_connect_resubscribes(mock_mqtt):
-    """_on_mqtt_connect should re-subscribe all running nodes."""
+    """Reconnect re-subscribes the app broadcast and running nodes exactly once."""
+    from conftest import wait_until
+    from kamio.core.mqtt_nodes import BROADCAST_ID
+
     mock_mqtt.simulate_connect()
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-resub")
     app.register(SimpleDevice)
     await app.start()
-    dev = await app.add_device("resub-dev", SimpleDevice)
+    await app.add_device("resub-dev", SimpleDevice)
 
-    # Simulate a reconnect — _on_mqtt_connect should re-subscribe.
-    app._on_mqtt_connect(mock_mqtt, {}, 0)
-    await asyncio.sleep(0.1)
-    # Device node should still be running.
-    assert app._device_nodes["resub-dev"]._is_running is True
+    connected, disconnected = [], []
+    app.event_bus.subscribe("mqtt_connected", connected.append)
+    app.event_bus.subscribe("mqtt_disconnected", disconnected.append)
+
+    # Forget recorded subscriptions, drop the connection and reconnect.
+    mock_mqtt.subscribed.clear()
+    mock_mqtt.simulate_disconnect()
+    mock_mqtt.simulate_reconnect()
+
+    assert await wait_until(
+        lambda: "Kamio/v1/resub-dev/#" in [t for t, _ in mock_mqtt.subscribed],
+        timeout=2.0,
+    )
+    topics = [t for t, _ in mock_mqtt.subscribed]
+    assert topics.count("Kamio/v1/resub-dev/#") == 1
+    # Broadcast is owned by the app: exactly one re-subscription per reconnect.
+    assert topics.count(f"Kamio/v1/{BROADCAST_ID}/#") == 1
+
+    # Event payloads carry broker/reason details.
+    assert await wait_until(lambda: len(connected) >= 1 and len(disconnected) >= 1)
+    assert "rc" in connected[-1] and "broker" in connected[-1]
+    assert "rc" in disconnected[-1]
+    await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_skips_stopped_nodes(mock_mqtt):
+    """A stopped device node must not be re-subscribed on reconnect (SCAN-20)."""
+    from conftest import wait_until
+
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-resub-stopped")
+    app.register(SimpleDevice)
+    await app.start()
+    await app.add_device("keep", SimpleDevice)
+    await app.add_device("gone", SimpleDevice)
+    await app.remove_device("gone")
+
+    mock_mqtt.subscribed.clear()
+    mock_mqtt.simulate_disconnect()
+    mock_mqtt.simulate_reconnect()
+
+    assert await wait_until(
+        lambda: "Kamio/v1/keep/#" in [t for t, _ in mock_mqtt.subscribed],
+        timeout=2.0,
+    )
+    topics = [t for t, _ in mock_mqtt.subscribed]
+    assert "Kamio/v1/gone/#" not in topics
+    await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_remove_device_keeps_broadcast_for_others(mock_mqtt):
+    """Removing one device must not drop the shared broadcast topic (SCAN-12)."""
+    from conftest import wait_until
+    from kamio.core.mqtt_nodes import BROADCAST_ID
+
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-bcast-owner")
+    app.register(SimpleDevice)
+    await app.start()
+    await app.add_device("dev1", SimpleDevice)
+    dev2 = await app.add_device("dev2", SimpleDevice)
+
+    await app.remove_device("dev1")
+
+    unsubscribed = [t for (t,) in mock_mqtt.unsubscribed]
+    assert "Kamio/v1/dev1/#" in unsubscribed
+    assert f"Kamio/v1/{BROADCAST_ID}/#" not in unsubscribed
+
+    # The remaining device still receives broadcast state updates.
+    env = Envelope.state(source="ha", data={"power": True})
+    mock_mqtt.publish(f"Kamio/v1/{BROADCAST_ID}/ds", env.to_json().encode(), qos=1)
+    assert await wait_until(lambda: dev2.power is True, timeout=2.0)
+    await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_custom_node_resubscribes_and_hooks_on_reconnect(mock_mqtt):
+    """Custom nodes re-subscribe and fire hooks on reconnect (SCAN-16)."""
+    from conftest import wait_until
+    from kamio.core.custom_nodes import CustomNode
+
+    calls = []
+
+    class Node(CustomNode):
+        async def start(self):
+            self.subscribe("in/#", qos=1)
+            self._is_running = True
+
+        async def handle_message(self, topic, payload):
+            pass
+
+        async def on_connect(self):
+            calls.append("connect")
+
+        async def on_disconnect(self):
+            calls.append("disconnect")
+
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-cn-reconn")
+    node = Node(mock_mqtt, "bridge")
+    app.register_custom_node("bridge", node)
+    await app.start()
+
+    mock_mqtt.subscribed.clear()
+    mock_mqtt.simulate_disconnect()
+    mock_mqtt.simulate_reconnect()
+
+    assert await wait_until(
+        lambda: "connect" in calls and "disconnect" in calls, timeout=2.0
+    )
+    topics = [t for t, _ in mock_mqtt.subscribed]
+    assert "bridge/in/#" in topics
+    await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_create_device_rolls_back_on_dropped_suback():
+    """A dropped SUBACK must roll back device registration (SCAN-07, SCAN-18)."""
+    from conftest import InMemoryBroker
+
+    app = KamioApp(mqtt_broker="mqtt://localhost:1883", client_id="test-suback")
+    app.register(SimpleDevice)
+    # Shorten the real ACK wait so the dropped SUBACK surfaces quickly.
+    app.mqtt_client._kamio_wait_for_suback = (
+        lambda mid: app._mqtt_conn._wait_for_suback(mid, timeout=0.2)
+    )
+    await app.start()
+
+    InMemoryBroker.get().drop_acks = True
+    try:
+        with pytest.raises(TimeoutError):
+            await app.add_device("noluck", SimpleDevice)
+        assert "noluck" not in app._device_nodes
+        assert app.registry.get_instance("noluck") is None
+    finally:
+        InMemoryBroker.get().drop_acks = False
     await app.stop()
 
 
@@ -349,8 +485,9 @@ async def test_resubscribe_all_nodes_preserves_running_and_skips_stopped(mock_mq
 
     assert running_node.is_running is True
     assert stopped_node.is_running is False
-    await asyncio.sleep(0)
-    running_node._resubscribe.assert_awaited_once()
+    from conftest import wait_until
+
+    assert await wait_until(lambda: running_node._resubscribe.await_count == 1, timeout=1.0)
     stopped_node._resubscribe.assert_not_awaited()
 
 
@@ -489,7 +626,7 @@ async def test_device_node_stop_cancels_tasks(mock_mqtt):
 
 @pytest.mark.asyncio
 async def test_device_node_resubscribe_handles_error(mock_mqtt, caplog):
-    """DeviceNode._resubscribe should log errors for failed subscriptions."""
+    """DeviceNode._resubscribe logs failed subscriptions and re-raises."""
     import logging
 
     from kamio.core.mqtt_nodes import DeviceNode
@@ -497,8 +634,10 @@ async def test_device_node_resubscribe_handles_error(mock_mqtt, caplog):
     mock_mqtt.subscribe = MagicMock(side_effect=RuntimeError("sub fail"))
     node = DeviceNode(device_id="dev1", mqtt_client=mock_mqtt)
     with caplog.at_level(logging.ERROR):
-        await node._resubscribe()
-    assert any("Failed to re-subscribe" in r.message for r in caplog.records)
+        with pytest.raises(RuntimeError, match="sub fail"):
+            await node._resubscribe()
+    assert any("Failed to subscribe" in r.message for r in caplog.records)
+    assert node._is_running is False
 
 
 # ---------------------------------------------------------------------------
