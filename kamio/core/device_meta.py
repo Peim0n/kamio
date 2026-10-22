@@ -2,11 +2,87 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import sys
 from typing import Any, Dict, Optional, get_type_hints
 
 from kamio.data_fields import Field
 
 logger = logging.getLogger("Kamio.device_meta")
+
+
+def _framework_localns() -> Dict[str, Any]:
+    """Names referenced by annotations in Device's framework base classes.
+
+    ``KamioApp``, ``BaseDriver``, and ``DeviceNode`` are imported under
+    ``TYPE_CHECKING`` in their respective modules, so ``get_type_hints``
+    cannot resolve them from module globals alone.  They are imported lazily
+    here because ``device_meta`` itself is imported while ``kamio.app`` is
+    still being initialized — a top-level import would be circular.  Missing
+    names are fine: non-field annotations that fail to resolve are skipped by
+    the per-field fallback in :func:`_resolve_field_hints`.
+    """
+    ns: Dict[str, Any] = {}
+    try:
+        from kamio.app import KamioApp
+
+        ns["KamioApp"] = KamioApp
+    except Exception:
+        pass
+    try:
+        from kamio.drivers.base import BaseDriver
+
+        ns["BaseDriver"] = BaseDriver
+    except Exception:
+        pass
+    try:
+        from kamio.core.mqtt_nodes import DeviceNode
+
+        ns["DeviceNode"] = DeviceNode
+    except Exception:
+        pass
+    return ns
+
+
+def _resolve_field_hints(cls: type, field_names: set) -> Dict[str, Any]:
+    """Resolve annotations only for field/event descriptors of ``cls``.
+
+    Walks the MRO (base classes first, like ``get_type_hints``) and evaluates
+    each field annotation with the declaring module's globals merged with the
+    declaring class's namespace and Kamio framework names.  Non-field
+    annotations (e.g. ``_app`` on mixins) are ignored entirely.
+
+    Raises:
+        TypeError: if a declared field annotation cannot be resolved — a raw
+            string must never end up in ``Field.python_type`` silently.
+    """
+    resolved: Dict[str, Any] = {}
+    errors: list = []
+    for base in reversed(cls.__mro__):
+        annotations = base.__dict__.get("__annotations__", {})
+        if not annotations:
+            continue
+        module = sys.modules.get(base.__module__)
+        globalns: Dict[str, Any] = dict(vars(module)) if module else {}
+        localns = dict(vars(base))
+        localns.update(_framework_localns())
+        for name, value in annotations.items():
+            if name not in field_names:
+                continue
+            try:
+                # A quoted annotation under ``from __future__ import
+                # annotations`` is stored as a string containing quotes
+                # (e.g. ``'"SomeType"'``), so evaluating it can yield another
+                # string — evaluate until the result is not a string.
+                while isinstance(value, str):
+                    value = eval(value, globalns, localns)
+                resolved[name] = value
+            except Exception as e:
+                errors.append(f"{base.__name__}.{name}: {e}")
+    if errors:
+        raise TypeError(
+            f"Could not resolve field type annotations for {cls.__name__!r}: " + "; ".join(errors)
+        )
+    return resolved
 
 
 def _merge_from_bases(bases: tuple, attr: str, own: dict) -> dict:
@@ -109,15 +185,26 @@ class DeviceMeta(type):
             return cls
 
         # Resolve type hints to get actual types for fields
+        field_names = set(raw_fields) | set(raw_events)
         try:
-            # We use get_type_hints to resolve string forward references
-            resolved: dict[str, Any] = get_type_hints(cls)
-        except Exception as e:
-            logger.warning(
-                f"Could not resolve type hints for {name!r}: {e}. "
-                f"Falling back to raw annotations."
+            # We use get_type_hints to resolve string forward references.
+            # localns supplies names (KamioApp, BaseDriver, DeviceNode) that
+            # framework base classes annotate but only import under
+            # TYPE_CHECKING — otherwise resolution fails for every subclass.
+            resolved: dict[str, Any] = get_type_hints(
+                cls, include_extras=True, localns=_framework_localns()
             )
-            resolved = annotations
+        except Exception as e:
+            # Whole-class resolution failed (e.g. a non-field annotation in a
+            # user-defined mixin cannot be resolved).  Resolve only the field
+            # annotations instead; _resolve_field_hints raises TypeError if a
+            # field annotation itself is unresolvable, so a raw string can
+            # never slip into Field.python_type silently.
+            logger.debug(
+                f"Could not resolve all type hints for {name!r}: {e}. "
+                f"Resolving field annotations individually."
+            )
+            resolved = _resolve_field_hints(cls, field_names)
 
         # Process and type fields
         fields: dict[str, Field] = {}

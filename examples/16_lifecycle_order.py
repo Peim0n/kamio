@@ -16,7 +16,7 @@
     8. _get_field_value возвращает default для state/config, None для telemetry/event
     9. DeviceMeta собирает поля из баз в порядке MRO, дочерний переопределяет родительский
    10. Переопределение поля с другим type/kind логирует WARNING, но всё равно применяется
-   11. Ошибка разрешения type hints → fallback на raw annotations (graceful, но теряется тип)
+   11. Неразрешимая аннотация поля → TypeError при создании класса (fail loudly)
 
 Запуск (БЕЗ MQTT-брокера)::
 
@@ -514,41 +514,45 @@ def test_field_override_different_type_warns():
 
 
 # =====================================================================
-# 11. Ошибка разрешения type hints → fallback на raw annotations
+# 11. Неразрешимая аннотация поля → TypeError при создании класса
 # =====================================================================
 
-# Создаём класс с forward reference, который не может быть разрешён
-class ForwardRefDevice(Device):
-    """Устройство с forward reference, который не разрешается."""
-    # "NonExistentType" — имя, которое не существует в области видимости
-    data: "NonExistentType" = state(default=None)  # noqa: F821
 
+def test_unresolvable_field_annotation_fails():
+    """Неразрешимая аннотация поля → TypeError, класс не создаётся.
 
-def test_type_hint_resolution_failure_fallback():
-    """Ошибка get_type_hints → fallback на raw annotations.
+    DeviceMeta разрешает type hints через get_type_hints(cls). Если аннотация
+    не относится к полю и не разрешается (напр. приватные атрибуты миксинов),
+    DeviceMeta разрешает аннотации полей поодиночке. Если аннотация самого
+    поля не разрешима — класс не создаётся: TypeError, а не молчаливая строка
+    в python_type.
 
-    DeviceMeta пытается разрешить type hints через get_type_hints(cls).
-    Если разрешение падает (напр. forward reference на несуществующий тип),
-    логируется WARNING и используется raw annotations.
-
-    НЕПРАВИЛЬНО (если ожидается, что класс не создаётся при ошибке type hints):
-        # Думаем, что ForwardRefDevice вызовет ошибку — но fallback срабатывает
+    НЕПРАВИЛЬНО (устаревшее поведение):
+        # Думаем, что класс с неразрешимой аннотацией поля создастся —
+        # fallback больше не подставляет raw annotation в python_type
 
     ПРАВИЛЬНО:
-        Понимать, что fallback graceful: класс создаётся, но python_type
-        может быть строкой (raw annotation) вместо реального типа.
+        Неразрешимая аннотация поля → TypeError на этапе class definition.
+        Разрешимый forward reference разрешается нормально.
     """
-    # Класс создался несмотря на неразрешимый forward reference
-    assert "data" in ForwardRefDevice.Kamio_FIELDS, "Поле data создано несмотря на ошибку type hints"
+    # Неразрешимый forward reference → TypeError при создании класса
+    try:
+        class ForwardRefDevice(Device):
+            """Устройство с forward reference, который не разрешается."""
+            # "NonExistentType" — имя, которое не существует в области видимости
+            data: "NonExistentType" = state(default=None)  # noqa: F821
+    except TypeError as e:
+        assert "NonExistentType" in str(e) or "data" in str(e)
+    else:
+        raise AssertionError("Ожидали TypeError для неразрешимой аннотации")
 
-    field = ForwardRefDevice.Kamio_FIELDS["data"]
-    # python_type будет raw annotation (строка "NonExistentType") или None
-    # В зависимости от того, как get_type_hints обработал ошибку
-    # Главное: класс создан, поле существует
-    assert field.name == "data"
-    assert field.default is None
+    # Разрешимый forward reference (напр. отложенная ссылка) — работает
+    class LateRefDevice(Device):
+        data: "int" = state(default=0)
 
-    print("[OK] 11. Ошибка type hints → fallback на raw annotations (класс создан, поле существует)")
+    assert LateRefDevice.Kamio_FIELDS["data"].python_type is int
+
+    print("[OK] 11. Неразрешимая аннотация поля → TypeError; разрешимый ref разрешается")
 
 
 # =====================================================================
@@ -571,7 +575,7 @@ def main():
     test_get_field_value_inconsistency()
     test_metaclass_inheritance_and_override()
     test_field_override_different_type_warns()
-    test_type_hint_resolution_failure_fallback()
+    test_unresolvable_field_annotation_fails()
 
     print()
     print("=" * 70)
