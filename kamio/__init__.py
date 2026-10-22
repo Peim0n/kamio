@@ -11,7 +11,7 @@ from .data_fields import config, event, state, telemetry
 from .device import Device, command, rule
 from .plugins.base import Plugin
 
-__version__ = "1.0.0b5"
+__version__ = "1.0.0b6"
 __all__ = [
     "KamioApp",
     "Device",
