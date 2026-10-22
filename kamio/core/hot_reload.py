@@ -511,7 +511,7 @@ async def _restore_rules(app: "KamioApp", old_rules: List["Rule"]) -> None:
     """Stop the rule engine, restore ``old_rules`` and restart it if the app is running."""
     await app.rules.stop()
     await app.rules.set_rules(old_rules)
-    if app._is_running:
+    if app.is_running:
         await app.rules.start()
 
 

@@ -190,9 +190,9 @@ async def test_setattr_state_evicts_old_cind_from_cache():
     d.node.is_running = True
     d.node.device_id = "dev1"
     # Set a very small limit so we trigger eviction quickly.
-    d._own_state_cinds_limit = 2
-    d._own_state_cinds = set()
-    d._own_state_cinds_order = []
+    from kamio.device import EchoCache
+
+    d._echo_cache = EchoCache(limit=2)
 
     # First change — adds cind #1.
     d.power = True
@@ -201,7 +201,7 @@ async def test_setattr_state_evicts_old_cind_from_cache():
     # Third change — should evict cind #1 (oldest).
     d.power = False
     # The oldest cind should have been evicted.
-    assert len(d._own_state_cinds_order) <= 2
+    assert len(d._echo_cache) <= 2
 
 
 # ---------------------------------------------------------------------------

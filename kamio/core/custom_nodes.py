@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from abc import ABC, abstractmethod
 from fnmatch import fnmatch
@@ -167,10 +166,15 @@ class CustomNode(ABC):
     async def publish_async(
         self, topic: str, payload: Any, qos: int = 0, retain: bool = False
     ) -> None:
-        """Non-blocking variant of :meth:`publish` (runs in a thread pool)."""
+        """Awaitable variant of :meth:`publish`.
+
+        ``gmqtt.Client.publish`` is itself non-blocking, so this is a thin
+        wrapper that publishes directly on the event loop — running it in a
+        worker thread would call into the asyncio client from the wrong
+        thread (SCAN-13).
+        """
         full_topic = self._resolve_topic(topic, absolute=False)
-        await asyncio.to_thread(
-            self.mqtt_client.publish,
+        self.mqtt_client.publish(
             full_topic,
             self._encode_payload(payload),
             qos=qos,

@@ -131,28 +131,71 @@ class TestTelnetDriver:
 
     @pytest.mark.asyncio
     async def test_execute_read_timeout(self):
+        """A read timeout raises TimeoutError and drops the connection (SCAN-08)."""
         drv = TelnetDriver("10.0.0.1", timeout=0.01)
         reader = MagicMock()
         reader.readline = AsyncMock(side_effect=asyncio.TimeoutError)
         writer = MagicMock()
         writer.drain = AsyncMock()
+        writer.wait_closed = AsyncMock()
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.execute("ping", {})
-        assert result == {"status": "ok", "command": "ping", "response": ""}
+            with pytest.raises(TimeoutError):
+                await drv.execute("ping", {})
+        writer.close.assert_called_once()
+        assert drv.writer is None
+        assert drv.reader is None
+
+    @pytest.mark.asyncio
+    async def test_read_timeout_discards_stale_response(self):
+        """A reply arriving after the timeout must not leak into the next
+        transaction — the connection is closed and reopened (SCAN-08)."""
+        drv = TelnetDriver("10.0.0.1", timeout=0.01)
+        stale_reader = MagicMock()
+        # First read times out; if the stale reader were reused, the next
+        # transaction would consume this late reply instead of its own.
+        stale_reader.readline = AsyncMock(side_effect=[asyncio.TimeoutError(), b"STALE\n"])
+        writer1 = MagicMock()
+        writer1.is_closing.return_value = False
+        writer1.drain = AsyncMock()
+        writer1.wait_closed = AsyncMock()
+        reader2 = MagicMock()
+        reader2.readline = AsyncMock(return_value=b"FRESH\n")
+        writer2 = MagicMock()
+        writer2.is_closing.return_value = False
+        writer2.drain = AsyncMock()
+        open_conn = AsyncMock(return_value=(reader2, writer2))
+        with patch("kamio.drivers.telnet.asyncio.open_connection", new=open_conn):
+            drv.reader, drv.writer = stale_reader, writer1
+            with pytest.raises(TimeoutError):
+                await drv.execute("ping", {})
+            result = await drv.execute("ping2", {})
+        assert result["response"] == "FRESH"
+        assert open_conn.await_count == 1
 
     @pytest.mark.asyncio
     async def test_execute_write_failure_then_reconnect(self):
+        """A failed drain closes the stream and re-opens a fresh one (SCAN-31)."""
         drv = TelnetDriver("10.0.0.1")
-        reader = MagicMock()
-        reader.readline = AsyncMock(return_value=b"OK\n")
-        writer = MagicMock()
-        writer.drain = AsyncMock(side_effect=[ConnectionError("broken"), None])
-        drv.reader, drv.writer = reader, writer
-        with patch.object(drv, "_ensure_connected", new=AsyncMock()):
+        reader1 = MagicMock()
+        reader1.readline = AsyncMock(return_value=b"OK\n")
+        writer1 = MagicMock()
+        writer1.is_closing.return_value = False
+        writer1.drain = AsyncMock(side_effect=ConnectionError("broken"))
+        writer1.wait_closed = AsyncMock()
+        reader2 = MagicMock()
+        reader2.readline = AsyncMock(return_value=b"OK\n")
+        writer2 = MagicMock()
+        writer2.is_closing.return_value = False
+        writer2.drain = AsyncMock()
+        open_conn = AsyncMock(side_effect=[(reader1, writer1), (reader2, writer2)])
+        with patch("kamio.drivers.telnet.asyncio.open_connection", new=open_conn):
+            await drv.connect()
             result = await drv.execute("ping", {})
-        # write called twice (retry after failure)
-        assert writer.write.call_count == 2
+        # Reconnect happened through the real _ensure_connected path.
+        assert open_conn.await_count == 2
+        assert drv.writer is writer2
+        writer2.write.assert_called_with(b"ping\n")
         assert result["response"] == "OK"
 
     @pytest.mark.asyncio
@@ -195,15 +238,18 @@ class TestTelnetDriver:
 
     @pytest.mark.asyncio
     async def test_read_timeout(self):
+        """read() shares execute()'s timeout behaviour (SCAN-08)."""
         drv = TelnetDriver("10.0.0.1", timeout=0.01)
         reader = MagicMock()
         reader.readline = AsyncMock(side_effect=asyncio.TimeoutError)
         writer = MagicMock()
         writer.drain = AsyncMock()
+        writer.wait_closed = AsyncMock()
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.read("field", {})
-        assert result == {"status": "ok", "field": "field", "response": ""}
+            with pytest.raises(TimeoutError):
+                await drv.read("field", {})
+        assert drv.writer is None
 
     @pytest.mark.asyncio
     async def test_read_write_failure_then_reconnect(self):
@@ -213,8 +259,13 @@ class TestTelnetDriver:
         reader.readline = AsyncMock(return_value=b"42\n")
         writer = MagicMock()
         writer.drain = AsyncMock(side_effect=[ConnectionError("broken"), None])
+        writer.wait_closed = AsyncMock()
         drv.reader, drv.writer = reader, writer
-        with patch.object(drv, "_ensure_connected", new=AsyncMock()):
+
+        async def fake_ensure():
+            drv.reader, drv.writer = reader, writer
+
+        with patch.object(drv, "_ensure_connected", new=AsyncMock(side_effect=fake_ensure)):
             result = await drv.read("temperature", {"command": "GET TEMP"})
         assert writer.write.call_count == 2
         assert result["response"] == "42"

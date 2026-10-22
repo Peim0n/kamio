@@ -75,10 +75,10 @@ class LoggingPlugin(Plugin):
     async def on_unload(self, app: "KamioApp") -> None:
         """Remove the file handler and close it."""
         if self._handler:
-            # Close the handler first so any buffered records are flushed,
-            # then remove it from the logger.
-            self._handler.close()
+            # Detach first: a concurrent emit against a closed handler would
+            # make RotatingFileHandler reopen the file and leak the fd.
             logging.getLogger("Kamio").removeHandler(self._handler)
+            self._handler.close()
             self._handler = None
 
     def subscribe_events(self, ctx: "PluginContext") -> None:

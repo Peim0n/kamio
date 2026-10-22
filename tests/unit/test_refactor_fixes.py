@@ -94,15 +94,31 @@ def test_own_state_cinds_is_bounded():
     d = BoundedDevice()
 
     # Simulate many published state cinds without echoes arriving.
-    for i in range(d._own_state_cinds_limit + 100):
-        cind = f"cind-{i}"
-        d._own_state_cinds.add(cind)
-        d._own_state_cinds_order.append(cind)
-        while len(d._own_state_cinds_order) > d._own_state_cinds_limit:
-            old = d._own_state_cinds_order.pop(0)
-            d._own_state_cinds.discard(old)
+    for i in range(4096 + 100):
+        d._echo_cache.remember(f"cind-{i}")
 
-    assert len(d._own_state_cinds) <= d._own_state_cinds_limit
+    assert len(d._echo_cache) <= 4096
+    # Oldest entries were evicted; newest are still tracked.
+    assert "cind-4195" in d._echo_cache
+    assert "cind-0" not in d._echo_cache
+
+
+def test_echo_cache_consume_and_evict():
+    """EchoCache consumes a cind exactly once and evicts oldest first (SCAN-02)."""
+    from kamio.device import EchoCache
+
+    cache = EchoCache(limit=3)
+    for cind in ("a", "b", "c"):
+        cache.remember(cind)
+
+    assert cache.consume("a") is True
+    assert cache.consume("a") is False  # consumed exactly once
+
+    cache.remember("d")
+    cache.remember("e")  # over limit -> evicts "b"
+    assert "b" not in cache
+    assert "e" in cache
+    assert len(cache) == 3
 
 
 # ---------------------------------------------------------------------------

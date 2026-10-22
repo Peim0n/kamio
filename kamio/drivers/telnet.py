@@ -110,17 +110,28 @@ class TelnetDriver(BaseDriver):
             await self.writer.drain()
         except Exception as e:
             self.logger.warning(f"Telnet write failed, attempting reconnect: {e}")
+            # Drop the broken stream first — a failed drain may leave the
+            # writer half-open, and _ensure_connected() early-returns on a
+            # non-closing writer.
+            await self.disconnect()
             await self._ensure_connected()
             assert self.writer is not None
             self.writer.write(payload)
             await self.writer.drain()
 
     async def _read_line(self) -> str:
-        """Read one line, returning ``""`` on timeout."""
+        """Read one line; TimeoutError propagates after the connection is closed.
+
+        A timed-out read must not return success: the late response would
+        stay buffered in the reader and be consumed by the *next*
+        transaction, shifting every subsequent reply by one.  Closing the
+        connection discards the buffered data entirely.
+        """
         assert self.reader is not None
         try:
             line = await asyncio.wait_for(self.reader.readline(), timeout=self.timeout)
             return line.decode().strip()
         except asyncio.TimeoutError:
-            self.logger.warning("Telnet read timeout")
-            return ""
+            self.logger.warning("Telnet read timeout — closing connection")
+            await self.disconnect()
+            raise TimeoutError(f"Telnet read timed out after {self.timeout}s")

@@ -1089,11 +1089,10 @@ class TestDeviceHandler:
     async def test_handle_state_own_echo(self, setup):
         device, node, handler, sm = setup
         env = Envelope.state(source="light1", data={"power": True})
-        device._own_state_cinds.add(env.cind)
-        device._own_state_cinds_order.append(env.cind)
+        device._echo_cache.remember(env.cind)
         await handler._handle_state(env)
         # echo should be discarded, no ack sent
-        assert env.cind not in device._own_state_cinds
+        assert env.cind not in device._echo_cache
 
     @pytest.mark.asyncio
     async def test_handle_state_own_echo_not_in_order_list(self, mock_mqtt):
@@ -1102,9 +1101,9 @@ class TestDeviceHandler:
         device.node = node
         handler = DeviceHandler(device, node)
         env = Envelope.state(source="light1", data={"power": True})
-        device._own_state_cinds.add(env.cind)  # evicted from order list, still in set
+        device._echo_cache.remember(env.cind)
         await handler._handle_state(env)  # should not raise
-        assert env.cind not in device._own_state_cinds
+        assert env.cind not in device._echo_cache
 
     @pytest.mark.asyncio
     async def test_handle_state_normal(self, setup):

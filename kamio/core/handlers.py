@@ -71,8 +71,10 @@ class DeviceHandler:
             async def _on_rules_trigger(device_id: str, changes: Dict[str, Any]) -> None:
                 await app.rules.handle_device_update(device_id, changes)
 
-            device._on_state_changed = _on_state_changed
-            device._on_rules_trigger = _on_rules_trigger
+            device.bind_callbacks(
+                on_state_changed=_on_state_changed,
+                on_rules_trigger=_on_rules_trigger,
+            )
 
         self._handlers = {
             EnvelopeType.SERVER_COMMAND: self._handle_command,
@@ -149,17 +151,8 @@ class DeviceHandler:
 
     async def _handle_state(self, env: Envelope):
         """Apply a DEVICE_STATE update and reply with STATE_ACK (or error)."""
-        with self.device._cinds_lock:
-            is_own_echo = env.cind in self.device._own_state_cinds
-            if is_own_echo:
-                # Our own echo; already applied locally, no need to re-apply.
-                self.device._own_state_cinds.discard(env.cind)
-                try:
-                    self.device._own_state_cinds_order.remove(env.cind)
-                except ValueError:
-                    # cind already evicted from the bounded order list.
-                    pass
-        if is_own_echo:
+        # Our own echo; already applied locally, no need to re-apply.
+        if self.device.consume_own_echo(env.cind):
             return
         try:
             applied = await self.device.handle_state(env.data)

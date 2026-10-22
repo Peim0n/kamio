@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
+from collections import OrderedDict
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -29,6 +29,41 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+class EchoCache:
+    """Bounded set of correlation ids awaiting own-echo suppression.
+
+    ``remember`` stores a cind, evicting the oldest entry once ``limit`` is
+    exceeded (a dropped echo must not grow the cache forever).  ``consume``
+    returns ``True`` and removes the entry when the cind was registered.
+    An :class:`OrderedDict` gives O(1) eviction and keeps the operations
+    atomic enough for use from both the event loop and worker threads.
+    """
+
+    def __init__(self, limit: int = 4096) -> None:
+        self._limit = limit
+        self._cinds: "OrderedDict[str, None]" = OrderedDict()
+
+    def remember(self, cind: str) -> None:
+        """Register *cind*, evicting the oldest entries past the limit."""
+        self._cinds[cind] = None
+        while len(self._cinds) > self._limit:
+            self._cinds.popitem(last=False)
+
+    def consume(self, cind: str) -> bool:
+        """Remove *cind* and return True if it was registered."""
+        try:
+            del self._cinds[cind]
+            return True
+        except KeyError:
+            return False
+
+    def __contains__(self, cind: str) -> bool:
+        return cind in self._cinds
+
+    def __len__(self) -> int:
+        return len(self._cinds)
 
 
 @overload
@@ -178,15 +213,9 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
         # Injected by DeviceHandler to decouple Device from KamioApp internals.
         self._on_state_changed: Optional[Callable[[str, str, Any, Any], Awaitable[None]]] = None
         self._on_rules_trigger: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None
-        # Bounded set of our own published state cinds awaiting echo suppression.
-        # Capped to avoid unbounded growth if echoes never arrive (e.g. broker
-        # drops the message); oldest entries are evicted when the cap is hit.
-        # Guarded by a lock because __setattr__ can fire from multiple
-        # concurrent tasks setting different state fields.
-        self._own_state_cinds: set[str] = set()
-        self._own_state_cinds_order: list[str] = []
-        self._own_state_cinds_limit = 4096
-        self._cinds_lock = threading.Lock()
+        # Bounded set of our own published state cinds awaiting echo
+        # suppression; oldest entries are evicted when the cap is hit.
+        self._echo_cache = EchoCache(limit=4096)
 
         # Apply default values for state and config fields
         self._apply_defaults()
@@ -228,6 +257,28 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
         """Return the lowercase class name used as device type identifier."""
         return cls.__name__.lower()
 
+    def bind_callbacks(
+        self,
+        on_state_changed: Optional[Callable[[str, str, Any, Any], Awaitable[None]]] = None,
+        on_rules_trigger: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> None:
+        """Bind framework callbacks used by the device.
+
+        Called by :class:`DeviceHandler` at registration time so the device
+        can publish ``device_state_changed`` events and trigger automation
+        rules without importing KamioApp internals.
+        """
+        self._on_state_changed = on_state_changed
+        self._on_rules_trigger = on_rules_trigger
+
+    def consume_own_echo(self, cind: str) -> bool:
+        """Return True if *cind* is an echo of a state change published by this device.
+
+        The cind is consumed: a matching cind suppresses the incoming echo
+        exactly once, so a later identical state push is still applied.
+        """
+        return self._echo_cache.consume(cind)
+
     def __setattr__(self, name: str, value: Any) -> None:
         """Validate and publish state field changes. Internal attributes and non-field names bypass validation."""
         # Internal attributes bypass field logic entirely.
@@ -245,13 +296,7 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
                 self.__dict__[name] = value
                 if old != value and hasattr(self, "node") and self.node:
                     env = Envelope.state(source=self.node.device_id, data={name: value})
-                    with self._cinds_lock:
-                        self._own_state_cinds.add(env.cind)
-                        self._own_state_cinds_order.append(env.cind)
-                        # Evict oldest entries if the echo-suppression cache is full.
-                        while len(self._own_state_cinds_order) > self._own_state_cinds_limit:
-                            old_cind = self._own_state_cinds_order.pop(0)
-                            self._own_state_cinds.discard(old_cind)
+                    self._echo_cache.remember(env.cind)
                     coro = self.node.publish(env, retain=True)
                     try:
                         loop = asyncio.get_running_loop()
