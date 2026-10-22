@@ -5,6 +5,7 @@ import gc
 import tracemalloc
 
 import pytest
+from conftest import wait_until
 
 from kamio import Device, KamioApp, command, rule, state
 from kamio.core.rules import RuleEvent
@@ -50,20 +51,21 @@ async def test_load_many_devices_and_rules():
         devices.append(d)
 
     await app.start()
+    try:
 
-    async def spam(dev):
-        for v in range(updates):
-            await dev.handle_state({"value": v})
+        async def spam(dev):
+            for v in range(updates):
+                await dev.handle_state({"value": v})
 
-    await asyncio.gather(*(spam(d) for d in devices))
-    await asyncio.sleep(0.05)
-
-    await app.stop()
+        await asyncio.gather(*(spam(d) for d in devices))
+        # handle_state awaits rule execution inline, but poll defensively so
+        # the assertion stays correct if dispatch ever becomes task-based.
+        assert await wait_until(lambda: len(rule_hits) >= device_count * updates, timeout=30.0)
+    finally:
+        await app.stop()
     gc.collect()
 
     assert not app.is_running
-    # Every update should trigger at least one rule execution.
-    assert len(rule_hits) >= device_count * updates
 
 
 @pytest.mark.stress
@@ -79,9 +81,11 @@ async def test_memory_leak_after_cycles():
         app = KamioApp()
         d = await app.add_device("d0", LoadDevice)
         await app.start()
-        for _ in range(50):
-            await d.handle_state({"value": 1})
-        await app.stop()
+        try:
+            for _ in range(50):
+                await d.handle_state({"value": 1})
+        finally:
+            await app.stop()
         del app, d
         gc.collect()
 
@@ -137,16 +141,16 @@ async def test_high_frequency_state_updates():
 
     devices = [await app.add_device(f"h{i}", LoadDevice) for i in range(20)]
     await app.start()
+    try:
 
-    async def burst(dev):
-        for v in range(100):
-            await dev.handle_state({"value": v})
+        async def burst(dev):
+            for v in range(100):
+                await dev.handle_state({"value": v})
 
-    await asyncio.gather(*(burst(d) for d in devices))
-    await asyncio.sleep(0.05)
-    await app.stop()
-
-    assert rule_hits >= 20 * 100
+        await asyncio.gather(*(burst(d) for d in devices))
+        assert await wait_until(lambda: rule_hits >= 20 * 100, timeout=30.0)
+    finally:
+        await app.stop()
 
 
 @pytest.mark.stress
@@ -163,19 +167,19 @@ async def test_load_many_devices_with_device_level_rules():
         devices.append(d)
 
     await app.start()
+    try:
 
-    async def spam(dev):
-        for v in range(updates):
-            await dev.handle_state({"value": v})
+        async def spam(dev):
+            for v in range(updates):
+                await dev.handle_state({"value": v})
 
-    await asyncio.gather(*(spam(d) for d in devices))
-    await asyncio.sleep(0.05)
-
-    await app.stop()
-
-    # Each device should have its rule hit for every update
-    total_device_rule_hits = sum(d.rule_hits for d in devices)
-    assert total_device_rule_hits >= device_count * updates
+        await asyncio.gather(*(spam(d) for d in devices))
+        assert await wait_until(
+            lambda: sum(d.rule_hits for d in devices) >= device_count * updates,
+            timeout=30.0,
+        )
+    finally:
+        await app.stop()
 
 
 @pytest.mark.stress
@@ -198,20 +202,20 @@ async def test_mixed_app_and_device_level_rules():
         devices.append(d)
 
     await app.start()
+    try:
 
-    async def spam(dev):
-        for v in range(updates):
-            await dev.handle_state({"value": v})
+        async def spam(dev):
+            for v in range(updates):
+                await dev.handle_state({"value": v})
 
-    await asyncio.gather(*(spam(d) for d in devices))
-    await asyncio.sleep(0.05)
-
-    await app.stop()
-
-    # Both app-level and device-level rules should have fired
-    total_device_rule_hits = sum(d.rule_hits for d in devices)
-    assert total_device_rule_hits >= device_count * updates
-    assert app_rule_hits >= device_count * updates
+        await asyncio.gather(*(spam(d) for d in devices))
+        assert await wait_until(
+            lambda: sum(d.rule_hits for d in devices) >= device_count * updates
+            and app_rule_hits >= device_count * updates,
+            timeout=30.0,
+        )
+    finally:
+        await app.stop()
 
 
 @pytest.mark.stress
@@ -237,15 +241,21 @@ async def test_device_level_rules_memory_stability():
             devices.append(d)
 
         await app.start()
+        try:
 
-        async def spam(dev):
-            for v in range(50):
-                await dev.handle_state({"value": v})
+            async def spam(dev):
+                for v in range(50):
+                    await dev.handle_state({"value": v})
 
-        await asyncio.gather(*(spam(d) for d in devices))
-        await asyncio.sleep(0.05)
-
-        await app.stop()
+            await asyncio.gather(*(spam(d) for d in devices))
+            # Device-level rule hits happen inside handle_state; wait for
+            # them deterministically instead of sleeping.
+            assert await wait_until(
+                lambda: sum(d.rule_hits for d in devices) >= len(devices) * 50,
+                timeout=30.0,
+            )
+        finally:
+            await app.stop()
         del app, devices
         gc.collect()
 

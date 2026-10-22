@@ -4,6 +4,7 @@ import asyncio
 import os
 
 import pytest
+from conftest import wait_until
 
 from kamio import Device, KamioApp, command, state
 
@@ -73,8 +74,7 @@ async def test_app_rule_cross_device():
     await app.add_device("hall", MotionSensor)
     sensor = app.devices["hall"]
     await sensor.handle_state({"motion": True})
-    await asyncio.sleep(0.05)
-    assert any(d.get("motion") is True for d in triggered)
+    assert await wait_until(lambda: any(d.get("motion") is True for d in triggered), timeout=2.0)
     assert app.devices["living_room"].power is True
 
 
@@ -84,7 +84,7 @@ async def test_event_bus_publish_and_subscribe():
     received = []
     app.subscribe_event("custom_alert", lambda d: received.append(d))
     await app.publish_event("custom_alert", {"level": "critical"})
-    await asyncio.sleep(0.05)
+    assert await wait_until(lambda: len(received) == 1, timeout=2.0)
     assert received[0]["level"] == "critical"
 
 

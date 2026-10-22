@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from conftest import wait_until
 
 from kamio import Device, KamioApp, command, state
 
@@ -45,19 +46,20 @@ async def test_two_apps_state_sync_propagates_via_broker():
     await app1.start()
     await app2.start()
 
-    await app1.add_device("sw", Switch)
-    await app2.add_device("sw", Switch)
+    try:
+        await app1.add_device("sw", Switch)
+        await app2.add_device("sw", Switch)
 
-    device1 = app1.devices["sw"]
-    await device1.handle_state({"power": True})
-    await device1.request_state_sync()
+        assert app2.devices["sw"].power is False
 
-    await asyncio.sleep(0.5)
+        device1 = app1.devices["sw"]
+        await device1.handle_state({"power": True})
+        await device1.request_state_sync()
 
-    assert app2.devices["sw"].power is True
-
-    await app1.stop()
-    await app2.stop()
+        assert await wait_until(lambda: app2.devices["sw"].power is True, timeout=5.0)
+    finally:
+        await app1.stop()
+        await app2.stop()
 
 
 @pytest.mark.asyncio
@@ -68,18 +70,19 @@ async def test_two_apps_command_from_app1_to_app2_device():
     await app1.start()
     await app2.start()
 
-    await app1.add_device("ctrl", Switch)
-    await app2.add_device("light", Switch)
+    try:
+        await app1.add_device("ctrl", Switch)
+        await app2.add_device("light", Switch)
 
-    controller = app1.devices["ctrl"]
-    await controller.send_command("light", "turn_on", {})
+        assert app2.devices["light"].power is False
 
-    await asyncio.sleep(0.5)
+        controller = app1.devices["ctrl"]
+        await controller.send_command("light", "turn_on", {})
 
-    assert app2.devices["light"].power is True
-
-    await app1.stop()
-    await app2.stop()
+        assert await wait_until(lambda: app2.devices["light"].power is True, timeout=5.0)
+    finally:
+        await app1.stop()
+        await app2.stop()
 
 
 @pytest.mark.asyncio
@@ -90,15 +93,21 @@ async def test_two_apps_different_devices_do_not_interact():
     await app1.start()
     await app2.start()
 
-    await app1.add_device("sw", Switch)
-    await app2.add_device("other", Switch)
+    try:
+        await app1.add_device("sw", Switch)
+        await app2.add_device("other", Switch)
 
-    await app1.devices["sw"].handle_state({"power": True})
-    await app1.devices["sw"].request_state_sync()
+        assert app2.devices["other"].power is False
 
-    await asyncio.sleep(0.5)
+        await app1.devices["sw"].handle_state({"power": True})
+        await app1.devices["sw"].request_state_sync()
 
-    assert app2.devices["other"].power is False
+        # Flush already-queued deliveries; no matching subscription exists on
+        # app2, so nothing may ever arrive for "other".
+        for _ in range(20):
+            await asyncio.sleep(0)
 
-    await app1.stop()
-    await app2.stop()
+        assert app2.devices["other"].power is False
+    finally:
+        await app1.stop()
+        await app2.stop()

@@ -7,6 +7,8 @@ All driver I/O is mocked so the tests run without hardware or a live network.
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -210,20 +212,46 @@ async def test_http_execute_post():
 # ---------------------------------------------------------------------------
 # GPIO: thread offloading
 # ---------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_gpio_connect_uses_to_thread():
-    """connect() must offload gpiod.Chip construction to a worker thread."""
+@pytest.fixture
+def fake_gpiod():
+    """Inject a fake gpiod module so the GPIO tests never skip (SCAN-45)."""
+    fake = types.ModuleType("gpiod")
+    fake.Chip = MagicMock()
+
+    old = sys.modules.get("gpiod")
+    sys.modules["gpiod"] = fake
     from kamio.drivers import gpio as gpio_mod
 
-    if gpio_mod.gpiod is None:
-        pytest.skip("gpiod not installed")
+    prev = gpio_mod.gpiod
+    gpio_mod.gpiod = fake
+    yield fake
+    if old is not None:
+        sys.modules["gpiod"] = old
+    else:
+        sys.modules.pop("gpiod", None)
+    gpio_mod.gpiod = prev
+
+
+@pytest.mark.asyncio
+async def test_gpio_connect_uses_to_thread(fake_gpiod):
+    """connect() must offload gpiod.Chip construction to a worker thread (SCAN-45)."""
+    from kamio.drivers import gpio as gpio_mod
 
     fake_chip = MagicMock()
-    with patch.object(gpio_mod.gpiod, "Chip", return_value=fake_chip) as chip_ctor:
-        driver = gpio_mod.GPIOChipDriver(chip_path="/dev/gpiochip0")
+    fake_gpiod.Chip.return_value = fake_chip
+    driver = gpio_mod.GPIOChipDriver(chip_path="/dev/gpiochip0")
+
+    async def _passthrough(fn, *args):
+        return fn(*args)
+
+    with patch("asyncio.to_thread", new=AsyncMock(side_effect=_passthrough)) as to_thread:
         await driver.connect()
-        chip_ctor.assert_called_once_with("/dev/gpiochip0")
-        assert driver.chip is fake_chip
+
+    to_thread.assert_awaited_once()
+    assert to_thread.await_args.args[0] is fake_gpiod.Chip
+    assert to_thread.await_args.args[1] == "/dev/gpiochip0"
+    fake_gpiod.Chip.assert_called_once_with("/dev/gpiochip0")
+    assert driver.chip is fake_chip
 
 
 @pytest.mark.asyncio

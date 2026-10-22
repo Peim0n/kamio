@@ -10,6 +10,7 @@ import threading
 import time
 
 import pytest
+from conftest import wait_until
 
 from kamio import Device, KamioApp, rule, state
 from kamio.core.hot_reload import (
@@ -343,13 +344,11 @@ class TestPollLoop:
         mgr.watch_file(str(f), handler)
         mgr.enable()
         try:
-            await asyncio.sleep(0.08)
             _touch(str(f), "updated")
             # Wait for poll + debounce + handler.
-            await asyncio.sleep(0.25)
+            assert await wait_until(lambda: len(calls) >= 1, timeout=5.0)
         finally:
             await mgr.disable()
-        assert len(calls) >= 1
         assert os.path.abspath(calls[0]) == os.path.abspath(str(f))
 
     @pytest.mark.asyncio
@@ -366,10 +365,9 @@ class TestPollLoop:
         try:
             new_file = tmp_path / "new_module.py"
             new_file.write_text("print(1)")
-            await asyncio.sleep(0.25)
+            assert await wait_until(lambda: len(calls) >= 1, timeout=5.0)
         finally:
             await mgr.disable()
-        assert len(calls) >= 1
         assert any(os.path.abspath(c) == os.path.abspath(str(new_file)) for c in calls)
 
 
@@ -391,7 +389,7 @@ class TestScheduling:
 
         try:
             mgr._schedule_call("/test/same_loop.py", handler)
-            await asyncio.sleep(0.1)
+            assert await wait_until(lambda: len(calls) == 1, timeout=5.0)
         finally:
             await mgr.disable()
         assert calls == ["/test/same_loop.py"]
@@ -417,7 +415,7 @@ class TestScheduling:
             t.start()
             t.join()
             # Wait for the thread-safe call to be processed.
-            await asyncio.sleep(0.15)
+            await asyncio.wait_for(asyncio.to_thread(call_event.wait, 5.0), timeout=10.0)
         finally:
             await mgr.disable()
         assert calls == ["/test/thread.py"]
@@ -445,10 +443,13 @@ class TestScheduling:
             mgr._schedule_call("/debounce.py", handler)
             mgr._schedule_call("/debounce.py", handler)
             mgr._schedule_call("/debounce.py", handler)
-            await asyncio.sleep(0.2)
+            assert await wait_until(lambda: len(calls) >= 1, timeout=5.0)
         finally:
             await mgr.disable()
-        # Only one call should fire after debounce.
+        # Only one call must fire, and no second call may be left pending.
+        assert len(calls) == 1
+        assert "/debounce.py" not in mgr._pending
+        await asyncio.sleep(0)
         assert len(calls) == 1
 
     @pytest.mark.asyncio
@@ -463,7 +464,7 @@ class TestScheduling:
 
         try:
             mgr._schedule_call_in_loop("/direct.py", handler)
-            await asyncio.sleep(0.1)
+            assert await wait_until(lambda: len(calls) == 1, timeout=5.0)
         finally:
             await mgr.disable()
         assert calls == ["/direct.py"]
@@ -1009,12 +1010,10 @@ class TestIntegration:
         mgr.watch_file(str(f), handler)
         mgr.enable()
         try:
-            await asyncio.sleep(0.08)
             _touch(str(f), "changed")
-            await asyncio.sleep(0.25)
+            assert await wait_until(lambda: len(calls) >= 1, timeout=5.0)
         finally:
             await mgr.disable()
-        assert len(calls) >= 1
 
     @pytest.mark.asyncio
     async def test_full_flow_async_handler(self, mock_mqtt, tmp_path):
@@ -1030,12 +1029,10 @@ class TestIntegration:
         mgr.watch_file(str(f), handler)
         mgr.enable()
         try:
-            await asyncio.sleep(0.08)
             _touch(str(f), "changed")
-            await asyncio.sleep(0.25)
+            assert await wait_until(lambda: len(calls) >= 1, timeout=5.0)
         finally:
             await mgr.disable()
-        assert len(calls) >= 1
 
     @pytest.mark.asyncio
     async def test_full_flow_config_handler(self, mock_mqtt, tmp_path):
@@ -1050,12 +1047,10 @@ class TestIntegration:
         mgr.watch_file(str(cfg), mgr.make_config_handler())
         mgr.enable()
         try:
-            await asyncio.sleep(0.08)
             cfg.write_text(json.dumps({"v": 2}))
             future = time.time() + 10
             os.utime(str(cfg), (future, future))
-            await asyncio.sleep(0.3)
+            assert await wait_until(lambda: len(events) >= 1, timeout=5.0)
         finally:
             await mgr.disable()
-        assert len(events) >= 1
         assert events[-1]["config"] == {"v": 2}

@@ -13,6 +13,7 @@ Covers gaps in:
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -199,14 +200,16 @@ async def test_gpio_disconnect_releases_lines(fake_gpiod):
 
 
 @pytest.mark.asyncio
-async def test_gpio_disconnect_release_error_logged(fake_gpiod):
+async def test_gpio_disconnect_release_error_logged(fake_gpiod, caplog):
     from kamio.drivers.gpio import GPIOChipDriver
 
     drv = GPIOChipDriver(chip_path="/dev/gpiochip0")
     await drv.connect()
     line = await drv._get_line(1, direction="input")
     line.release = MagicMock(side_effect=OSError("release failed"))
-    await drv.disconnect()  # should not raise
+    with caplog.at_level(logging.WARNING):
+        await drv.disconnect()  # should not raise
+    assert "Failed to release GPIO line" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +349,8 @@ async def test_lifecycle_start_already_running(mock_mqtt):
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-lc")
     app._is_running = True
     await app.start()  # should return immediately
+    # A second start() must not reconnect the MQTT client.
+    assert mock_mqtt.is_connected is False
 
 
 @pytest.mark.asyncio
@@ -433,16 +438,31 @@ async def test_lifecycle_await_bg_tasks_no_tasks(mock_mqtt):
     await app._await_bg_tasks(timeout=1.0)
 
 
-def test_lifecycle_run_catches_keyboard_interrupt(mock_mqtt):
+def test_lifecycle_run_catches_keyboard_interrupt(mock_mqtt, caplog):
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-lc6")
-    with patch("asyncio.run", side_effect=KeyboardInterrupt()):
+    with patch("asyncio.run", side_effect=KeyboardInterrupt()), caplog.at_level(logging.INFO):
         app.run()
+    assert "interrupted" in caplog.text.lower()
+    assert app.is_running is False
 
 
-def test_lifecycle_run_catches_exception(mock_mqtt):
+def test_lifecycle_run_catches_exception(mock_mqtt, caplog):
+    """run() logs the crash and leaves is_running False (SCAN-42)."""
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-lc7")
-    with patch("asyncio.run", side_effect=RuntimeError("crash")):
+    seen = []
+
+    def _fake_run(coro):
+        seen.append(coro)
+        coro.close()
+        raise RuntimeError("crash")
+
+    with patch("asyncio.run", side_effect=_fake_run), caplog.at_level(logging.ERROR):
         app.run()
+
+    assert seen, "asyncio.run was never invoked"
+    assert "Application crashed" in caplog.text
+    assert "crash" in caplog.text
+    assert app.is_running is False
 
 
 # ---------------------------------------------------------------------------
@@ -477,12 +497,14 @@ async def test_device_reinitialize(mock_mqtt):
     await app.stop()
 
 
-def test_device_app_setter_warning(mock_mqtt):
+def test_device_app_setter_warning(mock_mqtt, caplog):
     app1 = KamioApp(mqtt_broker=mock_mqtt, client_id="a1")
     app2 = KamioApp(mqtt_broker=mock_mqtt, client_id="a2")
     d = LifeDevice()
     d.app = app1
-    d.app = app2  # should warn but not raise
+    with caplog.at_level(logging.WARNING):
+        d.app = app2  # should warn but not raise
+    assert any("re-attached" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio

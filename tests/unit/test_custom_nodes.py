@@ -82,21 +82,31 @@ def test_teardown_subscriptions_logs_and_clears_on_unsubscribe_error(mock_mqtt_c
 
 @pytest.mark.asyncio
 async def test_unregister_running_node_cleans_subscriptions(mock_mqtt_client):
-    """Unregistering a running node should schedule stop() to clean up subs."""
+    """Unregistering a running node schedules stop() + subscription cleanup.
+
+    BridgeNode.stop() is a no-op (it does not call super().stop()); the
+    manager must still guarantee unsubscribe + stopped state via its
+    _stop_and_teardown finally block.
+    """
+    import asyncio
+
+    from conftest import wait_until
+
     app = KamioApp()
+    app._loop = asyncio.get_running_loop()
     node = BridgeNode(mock_mqtt_client, "bridge")
     app.register_custom_node("bridge", node)
     await node.start()
     node._is_running = True
-    # Unregister while running — stop() should be scheduled on the loop.
+
     app.unregister_custom_node("bridge")
     assert app.get_custom_node("bridge") is None
-    # Allow the scheduled stop() task to run.
-    import asyncio
 
-    await asyncio.sleep(0.01)
-    # The default stop() in BridgeNode is a no-op pass, but the node should
-    # no longer be registered.
+    # Wait for the scheduled _stop_and_teardown task to finish.
+    assert await wait_until(lambda: not app.custom_nodes._stop_tasks, timeout=2.0)
+    mock_mqtt_client.unsubscribe.assert_called_with("bridge/cmd/#")
+    assert node.is_running is False
+    assert node._subscriptions == {}
     assert "bridge" not in app.list_custom_nodes()
 
 

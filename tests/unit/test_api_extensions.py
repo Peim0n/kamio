@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -270,27 +271,47 @@ async def test_device_full_snapshot_contains_all_fields():
 
 
 @pytest.mark.asyncio
-async def test_device_reinitialize_runs_without_error():
+async def test_device_reinitialize_disconnects_then_reconnects_driver():
+    """reinitialize() must disconnect the driver before reconnecting (SCAN-28)."""
     d = SnapshotDevice()
-    await d.reinitialize()
-    assert d.power is False
-    assert d.temp == 21.0
+    node = MagicMock()
+    node.is_running = True
+    driver = MagicMock()
+    driver.connect = AsyncMock()
+    driver.disconnect = AsyncMock()
+    d.node = node
+    d.driver = driver
+
+    try:
+        await d.reinitialize()
+        names = [c[0] for c in driver.method_calls]
+        assert names == ["disconnect", "connect"]
+        assert d.power is False
+        assert d.temp == 21.0
+    finally:
+        await d.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_device_shutdown_runs_without_error():
+async def test_device_shutdown_cancels_background_tasks():
+    """shutdown() cancels every tracked background task (SCAN-28)."""
     d = SnapshotDevice()
+    task = d.create_task(asyncio.sleep(3600), name="long-running")
+    assert task in d._bg_tasks
+
     await d.shutdown()
-    assert d.power is False
+
+    assert task.done()
+    assert d._bg_tasks == set()
 
 
 @pytest.mark.asyncio
 async def test_device_telemetry_helpers_callable():
     d = SnapshotDevice()
-    await d.read_telemetry_value("temp")
+    assert await d.read_telemetry_value("temp") is None  # no driver attached
     update = await d.handle_telemetry_update(["temp"])
-    assert update is None or isinstance(update, dict)
-    await d.publish_telemetry({"temp": 22.0})
+    assert update == {"temp": 21.0}
+    await d.publish_telemetry({"temp": 22.0})  # no node -> publish skipped
 
 
 # ---------------------------------------------------------------------------
@@ -398,23 +419,42 @@ def test_hot_reload_handler_factories_exist():
 
 @pytest.mark.asyncio
 async def test_metrics_plugin_loads_and_exposes_metrics():
+    """Counters grow on events and reset when the plugin unloads (SCAN-35)."""
     app = KamioApp()
-    await app.load_plugin(MetricsPlugin)
-    metrics = app.get_plugin("metrics")
+    metrics = await app.load_plugin(MetricsPlugin)
     assert metrics is not None
     assert callable(getattr(metrics, "get_metrics", None))
 
-    before = await metrics.get_metrics()
-    await app.publish_event("test_metric_event", {"x": 1})
-    after = await metrics.get_metrics()
+    before = await metrics.get_counter("device_added")
+    await app.publish_event("device_added", {"device_id": "dev-1"})
+    after = await metrics.get_counter("device_added")
+    assert after == before + 1
 
-    # The plugin is documented as an in-memory event counter.
-    assert isinstance(after, dict)
+    await app.unload_plugin("metrics")
+
+    assert app.get_plugin("metrics") is None
+    assert await metrics.get_metrics() == {}  # counters reset on unload
+    # All event subscriptions registered through the context are removed.
+    assert app.event_bus.list_subscribers("device_added") == []
 
 
 @pytest.mark.asyncio
 async def test_logging_plugin_loads_with_config(tmp_path):
+    """Events land in the log file; unload detaches + closes the handler (SCAN-35)."""
     app = KamioApp()
     log_file = tmp_path / "app.log"
-    await app.load_plugin(LoggingPlugin, config={"file": str(log_file), "level": "INFO"})
+    plugin = await app.load_plugin(LoggingPlugin, config={"file": str(log_file), "level": "INFO"})
     assert app.get_plugin("logging") is not None
+
+    kamio_logger = logging.getLogger("Kamio")
+    assert plugin._handler in kamio_logger.handlers
+
+    await app.publish_event("device_added", {"device_id": "dev-1"})
+    plugin._handler.flush()
+    assert "dev-1" in log_file.read_text(encoding="utf-8")
+
+    await app.unload_plugin("logging")
+
+    assert plugin._handler is None
+    assert not any(getattr(h, "baseFilename", None) == str(log_file) for h in kamio_logger.handlers)
+    assert app.event_bus.list_subscribers("device_added") == []

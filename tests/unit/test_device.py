@@ -155,20 +155,31 @@ async def test_command_method_is_async_callable():
 
 @pytest.mark.asyncio
 async def test_lifecycle_hooks_run_async():
+    """on_start awaits telemetry + keepalive start; on_stop cleans up (SCAN-32)."""
     node = MagicMock()
     node.is_running = True
-    node.start_telemetry = AsyncMock()
-    node.stop_telemetry = AsyncMock()
     device = ExampleDevice()
+    device.start_telemetry = AsyncMock()
+    device._start_keepalive = AsyncMock()
+
     await device.on_init()
     await device.on_start(node=node)
+    device.start_telemetry.assert_awaited_once()
+    device._start_keepalive.assert_awaited_once()
+
     await device.on_stop(node=node)
+    assert device._bg_tasks == set()
 
 
 @pytest.mark.asyncio
 async def test_emit_and_handle_event():
+    """emit() forwards the event to node.emit_event with the payload (SCAN-32)."""
     device = ExampleDevice()
+    device.node = MagicMock()
+    device.node.emit_event = AsyncMock()
     payload = {"button": "power"}
-    # emit publishes; handle_event processes incoming events.
+
     await device.emit("button", payload)
+    device.node.emit_event.assert_awaited_once_with("button", payload)
+
     await device.handle_event("button", payload)

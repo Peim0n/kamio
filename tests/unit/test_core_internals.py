@@ -12,6 +12,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from conftest import wait_until
 
 from kamio import Device, KamioApp, command, config, event, state, telemetry
 from kamio.core.custom_nodes import CustomNode, CustomNodeManager
@@ -423,7 +424,7 @@ class TestTelemetryMixin:
         d.publish_telemetry = AsyncMock()
 
         task = d.create_task(d._telemetry_scheduler(["temp"], 0.01), name="telemetry_0.01")
-        await asyncio.sleep(0.05)
+        assert await wait_until(lambda: d.publish_telemetry.await_count >= 1, timeout=2.0)
         task.cancel()
         try:
             await task
@@ -445,7 +446,8 @@ class TestTelemetryMixin:
         d.publish_telemetry = AsyncMock()
 
         task = d.create_task(d._telemetry_scheduler(["temp"], 0.01), name="telemetry_0.01")
-        await asyncio.sleep(0.05)
+        # The scheduler runs at least once and finds no data to publish.
+        assert await wait_until(lambda: d.handle_telemetry_update.await_count >= 1, timeout=2.0)
         task.cancel()
         try:
             await task
@@ -466,7 +468,8 @@ class TestTelemetryMixin:
         d.publish_telemetry = AsyncMock()
 
         task = d.create_task(d._telemetry_scheduler(["temp"], 0.01), name="telemetry_0.01")
-        await asyncio.sleep(0.05)
+        # The scheduler ran at least one tick that raised the error.
+        assert await wait_until(lambda: d.handle_telemetry_update.await_count >= 1, timeout=2.0)
         d.node.is_running = False
         task.cancel()
         try:
@@ -489,10 +492,9 @@ class TestTelemetryMixin:
         d.publish_telemetry = AsyncMock()
 
         task = d.create_task(d._telemetry_scheduler(["x"], 0.01), name="telemetry_0.01")
-        await asyncio.sleep(0.02)
+        assert await wait_until(lambda: d.handle_telemetry_update.await_count >= 1, timeout=2.0)
         d.node.is_running = False
-        await asyncio.sleep(0.05)
-        assert task.done()
+        assert await wait_until(lambda: task.done(), timeout=2.0)
 
     @pytest.mark.asyncio
     async def test_read_telemetry_value_no_driver(self):
@@ -701,7 +703,8 @@ class TestBaseNode:
         node = BaseNode("dev1", mock_mqtt)
         await node.start()
         node.dispatch("Kamio/v1/other/dt", b"{}")
-        await asyncio.sleep(0.01)
+        for _ in range(10):
+            await asyncio.sleep(0)
         # nothing should happen; no tasks created for wrong device
         assert len(node._tasks) == 0
         await node.stop()
@@ -710,9 +713,16 @@ class TestBaseNode:
     async def test_dispatch_broadcast_routes(self, mock_mqtt):
         node = BaseNode("dev1", mock_mqtt)
         await node.start()
+        called = []
+
+        async def handler(env):
+            called.append(env)
+
+        node.on(EnvelopeType.DEVICE_TELEMETRY, handler)
         env = Envelope.telemetry(source="other", data={"x": 1})
         node.dispatch(f"Kamio/v1/{BROADCAST_ID}/dt", env.to_json().encode())
-        await asyncio.sleep(0.05)
+        assert await wait_until(lambda: len(called) == 1, timeout=2.0)
+        assert called[0].data == {"x": 1}
         await node.stop()
 
     @pytest.mark.asyncio
@@ -727,16 +737,24 @@ class TestBaseNode:
         node.on(EnvelopeType.DEVICE_TELEMETRY, handler)
         env = Envelope.telemetry(source="dev1", data={"x": 1})
         node.dispatch("Kamio/v1/dev1/dt", env.to_json().encode())
-        await asyncio.sleep(0.05)
-        assert len(called) == 1
+        assert await wait_until(lambda: len(called) == 1, timeout=2.0)
         await node.stop()
 
     @pytest.mark.asyncio
     async def test_dispatch_invalid_json_skipped(self, mock_mqtt):
         node = BaseNode("dev1", mock_mqtt)
         await node.start()
+        called = []
+
+        async def handler(env):
+            called.append(env)
+
+        node.on(EnvelopeType.DEVICE_TELEMETRY, handler)
         node.dispatch("Kamio/v1/dev1/dt", b"not json")
-        await asyncio.sleep(0.05)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert called == []
+        assert len(node._tasks) == 0
         await node.stop()
 
     @pytest.mark.asyncio
@@ -748,7 +766,7 @@ class TestBaseNode:
         await node.stop()
 
     @pytest.mark.asyncio
-    async def test_handle_message_handler_exception_logged(self, mock_mqtt):
+    async def test_handle_message_handler_exception_logged(self, mock_mqtt, caplog):
         node = BaseNode("dev1", mock_mqtt)
         await node.start()
 
@@ -757,7 +775,10 @@ class TestBaseNode:
 
         node.on(EnvelopeType.DEVICE_TELEMETRY, bad_handler)
         env = Envelope.telemetry(source="dev1", data={})
-        await node._handle_message(env.to_json().encode())
+        with caplog.at_level(logging.ERROR):
+            await node._handle_message(env.to_json().encode())
+        assert "Handler error" in caplog.text
+        assert "handler boom" in caplog.text
         await node.stop()
 
     def test_on_requires_envelope_type(self, mock_mqtt):
@@ -791,16 +812,22 @@ class TestBaseNode:
         assert mock_mqtt.published[-1] == ("custom/topic", b"raw", 2, True)
 
     @pytest.mark.asyncio
-    async def test_publish_raw_shutdown_error_swallowed(self, mock_mqtt):
+    async def test_publish_raw_shutdown_error_swallowed(self, mock_mqtt, caplog):
         mock_mqtt.publish = MagicMock(side_effect=RuntimeError("Event loop is closed"))
         node = BaseNode("dev1", mock_mqtt)
-        await node.publish_raw("t", b"x")  # should not raise
+        with caplog.at_level(logging.ERROR):
+            await node.publish_raw("t", b"x")  # should not raise
+        # Shutdown-time publish errors are silently ignored, not logged.
+        assert "Publish error" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_publish_raw_generic_error_logged(self, mock_mqtt):
+    async def test_publish_raw_generic_error_logged(self, mock_mqtt, caplog):
         mock_mqtt.publish = MagicMock(side_effect=ValueError("boom"))
         node = BaseNode("dev1", mock_mqtt)
-        await node.publish_raw("t", b"x")  # should not raise
+        with caplog.at_level(logging.ERROR):
+            await node.publish_raw("t", b"x")  # should not raise
+        assert "Publish error" in caplog.text
+        assert "boom" in caplog.text
 
 
 class TestDeviceNode:
@@ -864,7 +891,7 @@ class TestDeviceNode:
         assert len(called) == 1
 
     @pytest.mark.asyncio
-    async def test_handle_message_handler_exception_logged(self, mock_mqtt):
+    async def test_handle_message_handler_exception_logged(self, mock_mqtt, caplog):
         node = DeviceNode("dev1", mock_mqtt)
 
         async def bad(env):
@@ -872,7 +899,10 @@ class TestDeviceNode:
 
         node.set_handler(bad)
         env = Envelope.telemetry(source="dev1", data={})
-        await node._handle_message(env.to_json().encode())
+        with caplog.at_level(logging.ERROR):
+            await node._handle_message(env.to_json().encode())
+        assert "Handler error" in caplog.text
+        assert "boom" in caplog.text
 
     @pytest.mark.asyncio
     async def test_handle_message_no_handler_falls_back(self, mock_mqtt):
@@ -1087,23 +1117,35 @@ class TestDeviceHandler:
 
     @pytest.mark.asyncio
     async def test_handle_state_own_echo(self, setup):
+        """An echo of our own publish is consumed: no apply, no ACK (SCAN-30)."""
         device, node, handler, sm = setup
-        env = Envelope.state(source="light1", data={"power": True})
-        device._echo_cache.remember(env.cind)
-        await handler._handle_state(env)
-        # echo should be discarded, no ack sent
-        assert env.cind not in device._echo_cache
+        node.mqtt.published.clear()
+        # Real assignment registers the cind and publishes the envelope.
+        device.power = True
+        await asyncio.sleep(0)  # let the publish task run
+        assert len(node.mqtt.published) == 1
+        echo_env = Envelope.from_json(node.mqtt.published[-1][1])
+        node.mqtt.published.clear()
+
+        device.handle_state = AsyncMock()
+        await handler._handle_state(echo_env)
+
+        device.handle_state.assert_not_awaited()
+        assert node.mqtt.published == []  # no ACK published for an echo
+        assert echo_env.cind not in device._echo_cache
 
     @pytest.mark.asyncio
-    async def test_handle_state_own_echo_not_in_order_list(self, mock_mqtt):
-        device = Light()
-        node = DeviceNode("light1", mock_mqtt)
-        device.node = node
-        handler = DeviceHandler(device, node)
-        env = Envelope.state(source="light1", data={"power": True})
+    async def test_handle_state_own_echo_consumed_once(self, setup):
+        """A remembered cind suppresses exactly one echo; repeats apply (SCAN-30)."""
+        device, node, handler, sm = setup
+        env = Envelope.state(source="0", data={"power": True})
         device._echo_cache.remember(env.cind)
-        await handler._handle_state(env)  # should not raise
-        assert env.cind not in device._echo_cache
+
+        await handler._handle_state(env)  # suppressed as own echo
+        assert device.power is False
+
+        await handler._handle_state(env)  # no longer an echo -> applied
+        assert device.power is True
 
     @pytest.mark.asyncio
     async def test_handle_state_normal(self, setup):
@@ -1114,13 +1156,20 @@ class TestDeviceHandler:
         assert len(node.mqtt.published) >= 1
 
     @pytest.mark.asyncio
-    async def test_handle_state_no_changes_no_ack(self, setup):
+    async def test_handle_state_no_change_sends_empty_ack(self, setup):
+        """A no-op state update still gets a STATE_ACK with empty result (SCAN-30)."""
         device, node, handler, sm = setup
         device.power = True
+        await asyncio.sleep(0)
+        node.mqtt.published.clear()
+
         env = Envelope.state(source="0", data={"power": True})
         await handler._handle_state(env)
-        # no change -> no ack published for this
-        # (nothing published specifically for the ack)
+
+        assert len(node.mqtt.published) == 1
+        ack = Envelope.from_json(node.mqtt.published[-1][1])
+        assert ack.type == EnvelopeType.STATE_ACK
+        assert ack.data["result"] == {}
 
     @pytest.mark.asyncio
     async def test_handle_state_validation_error(self, setup):
@@ -1433,9 +1482,11 @@ class TestCustomNodeManager:
         mgr.unregister_node("n1")
         assert mgr.get_node("n1") is None
 
-    def test_unregister_missing_logs_warning(self, app):
+    def test_unregister_missing_logs_warning(self, app, caplog):
         mgr = CustomNodeManager(app)
-        mgr.unregister_node("nope")  # should not raise
+        with caplog.at_level(logging.WARNING):
+            mgr.unregister_node("nope")
+        assert "nope" in caplog.text
 
     @pytest.mark.asyncio
     async def test_start_all_starts_each(self, app):
@@ -1464,11 +1515,17 @@ class TestCustomNodeManager:
         mgr = CustomNodeManager(app)
         client = MagicMock()
         n1 = _RecordingNode(client, "p1")
+        n2 = _RecordingNode(client, "p2")
         mgr.register_node("n1", n1)
+        mgr.register_node("n2", n2)
         await n1.start()
+        await n2.start()
         await mgr.stop_all()
-        assert n1.stopped
+        assert n1.stopped and n2.stopped
         assert n1._is_running is False
+        assert n2._is_running is False
+        assert n1._subscriptions == {}
+        assert n2._subscriptions == {}
 
     @pytest.mark.asyncio
     async def test_stop_all_skips_not_running(self, app):
@@ -1476,16 +1533,23 @@ class TestCustomNodeManager:
         n1 = _RecordingNode(MagicMock(), "p1")
         mgr.register_node("n1", n1)
         await mgr.stop_all()  # n1 not running -> skip
+        assert n1.stopped is False
 
     @pytest.mark.asyncio
-    async def test_stop_all_handles_error(self, app):
+    async def test_stop_all_handles_error(self, app, caplog):
         mgr = CustomNodeManager(app)
         client = MagicMock()
         n1 = _RecordingNode(client, "p1")
+        n2 = _RecordingNode(client, "p2")
         mgr.register_node("n1", n1)
+        mgr.register_node("n2", n2)
         n1._is_running = True
+        n2._is_running = True
         n1.stop = AsyncMock(side_effect=RuntimeError("boom"))
-        await mgr.stop_all()  # should not raise
+        with caplog.at_level(logging.ERROR):
+            await mgr.stop_all()  # should not raise
+        assert "boom" in caplog.text
+        assert n2.stopped  # the other node is still stopped
 
     @pytest.mark.asyncio
     async def test_route_message_handled(self, app):

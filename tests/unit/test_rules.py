@@ -88,14 +88,20 @@ async def test_unfiltered_rule_triggers_on_any_state_change():
 async def test_interval_rule_runs_periodically_and_on_start():
     app = KamioApp()
     calls = []
+    done = asyncio.Event()
 
     @app.rule(interval=0.05, run_on_start=True)
     async def periodic(event: RuleEvent, app: KamioApp):
         calls.append(event.kind)
+        if len(calls) >= 2:
+            done.set()
 
     await app.start()
-    await asyncio.sleep(0.12)
-    await app.stop()
+    try:
+        # run_on_start fires once, then the interval tick fires again.
+        await asyncio.wait_for(done.wait(), timeout=5.0)
+    finally:
+        await app.stop()
 
     assert "interval" in calls
     # Should run at least twice (run_on_start + interval ticks).
@@ -383,11 +389,10 @@ async def test_set_rules_replaces_rule_set_and_cancels_tasks():
     assert r1.task is not None and not r1.task.done()
     assert r2.task is not None and not r2.task.done()
 
-    # Replace with an empty rule set — old tasks must be cancelled & awaited.
+    # Replace with an empty rule set — set_rules cancels AND awaits the
+    # interval tasks inline, so they must be done immediately.
     await engine.set_rules([])
     assert len(engine.rules) == 0
-    # Give cancelled tasks a moment to settle.
-    await asyncio.sleep(0.01)
     assert r1.task.done()
     assert r2.task.done()
     await engine.stop()

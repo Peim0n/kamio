@@ -161,8 +161,11 @@ async def test_setattr_state_publishes_when_loop_available():
     await asyncio.get_event_loop().create_task(asyncio.sleep(0))
     d.power = True  # __setattr__ should schedule publish
     # Let the task run.
-    await asyncio.sleep(0.01)
-    assert d.node.publish.called or d.power is True
+    for _ in range(10):
+        await asyncio.sleep(0)
+    d.node.publish.assert_awaited_once()
+    env = d.node.publish.await_args.args[0]
+    assert env.data == {"power": True}
 
 
 def test_setattr_state_outside_event_loop_closes_coro():
@@ -200,8 +203,16 @@ async def test_setattr_state_evicts_old_cind_from_cache():
     d.brightness = 50
     # Third change — should evict cind #1 (oldest).
     d.power = False
-    # The oldest cind should have been evicted.
-    assert len(d._echo_cache) <= 2
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    # The oldest cind must have been evicted; the cache stays at the limit.
+    assert len(d._echo_cache) == 2
+    cinds = [call.args[0].cind for call in d.node.publish.await_args_list]
+    assert len(cinds) == 3
+    assert d._echo_cache.consume(cinds[0]) is False  # evicted
+    assert d._echo_cache.consume(cinds[1]) is True
+    assert d._echo_cache.consume(cinds[2]) is True
 
 
 # ---------------------------------------------------------------------------
@@ -267,61 +278,55 @@ async def test_start_keepalive_no_node():
 
 @pytest.mark.asyncio
 async def test_keepalive_loop_sends_envelope():
-    """Keepalive loop should publish keepalive envelopes."""
+    """Keepalive loop publishes envelopes until the node stops (SCAN-40)."""
     d = FullDevice()
     d.node = MagicMock()
     d.node.is_running = True
     d.node.device_id = "dev1"
-    d.node.publish = AsyncMock()
+
+    async def _publish(env, **kwargs):
+        if d.node.publish.await_count >= 3:
+            d.node.is_running = False
+
+    d.node.publish = AsyncMock(side_effect=_publish)
     d._keepalive_interval = 0.01
 
-    async def _stop_after_two():
-        await asyncio.sleep(0.05)
-        d.node.is_running = False
-
-    asyncio.create_task(_stop_after_two())
     await d._start_keepalive()
-    await asyncio.sleep(0.08)
-    if d._keepalive_task and not d._keepalive_task.done():
-        d._keepalive_task.cancel()
-        try:
-            await d._keepalive_task
-        except asyncio.CancelledError:
-            pass
-    # At least one publish should have happened.
-    assert d.node.publish.called
+    # The loop exits on its own once the mock flips is_running to False —
+    # no manual cancel needed.
+    await asyncio.wait_for(d._keepalive_task, timeout=5.0)
+    assert d.node.publish.await_count == 3
 
 
 @pytest.mark.asyncio
 async def test_keepalive_loop_handles_publish_error(caplog):
-    """Keepalive loop should log errors from _safe_publish and continue."""
+    """Keepalive loop should log errors from _safe_publish and continue (SCAN-40)."""
     import logging
 
     d = FullDevice()
     d.node = MagicMock()
     d.node.is_running = True
     d.node.device_id = "dev1"
-    d.node.publish = AsyncMock(side_effect=RuntimeError("publish fail"))
+
+    async def _publish(env, **kwargs):
+        if d.node.publish.await_count >= 3:
+            d.node.is_running = False
+        raise RuntimeError("publish fail")
+
+    d.node.publish = AsyncMock(side_effect=_publish)
     d._keepalive_interval = 0.01
 
     with caplog.at_level(logging.ERROR):
         await d._start_keepalive()
-        await asyncio.sleep(0.05)
-        d.node.is_running = False
-        await asyncio.sleep(0.02)
-    if d._keepalive_task and not d._keepalive_task.done():
-        d._keepalive_task.cancel()
-        try:
-            await d._keepalive_task
-        except asyncio.CancelledError:
-            pass
+        await asyncio.wait_for(d._keepalive_task, timeout=5.0)
+    assert d.node.publish.await_count == 3
     # _safe_publish catches the error and logs "Failed to publish".
     assert any("Failed to publish" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
 async def test_keepalive_loop_handles_unexpected_error(caplog):
-    """Keepalive loop should log unexpected errors (not from publish) and retry."""
+    """Keepalive loop should log unexpected errors (not from publish) and retry (SCAN-40)."""
     import logging
 
     d = FullDevice()
@@ -331,22 +336,21 @@ async def test_keepalive_loop_handles_unexpected_error(caplog):
     d._keepalive_interval = 0.01
 
     # Patch _safe_publish to raise an unexpected error (bypassing its try/except).
+    calls = 0
+
     async def _failing_safe_publish(env):
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            d.node.is_running = False
         raise RuntimeError("unexpected keepalive error")
 
     d._safe_publish = _failing_safe_publish
 
     with caplog.at_level(logging.ERROR):
         await d._start_keepalive()
-        await asyncio.sleep(0.05)
-        d.node.is_running = False
-        await asyncio.sleep(0.02)
-    if d._keepalive_task and not d._keepalive_task.done():
-        d._keepalive_task.cancel()
-        try:
-            await d._keepalive_task
-        except asyncio.CancelledError:
-            pass
+        await asyncio.wait_for(d._keepalive_task, timeout=5.0)
+    assert calls == 3
     assert any("Keepalive error" in r.message for r in caplog.records)
 
 
@@ -363,19 +367,20 @@ async def test_keepalive_loop_cancelled(caplog):
     d._keepalive_interval = 10.0  # long so we can cancel mid-sleep
 
     await d._start_keepalive()
-    await asyncio.sleep(0.01)
+    # Let the loop reach its first sleep before cancelling.
+    for _ in range(10):
+        await asyncio.sleep(0)
     with caplog.at_level(logging.WARNING):
         d._keepalive_task.cancel()
-        try:
-            await d._keepalive_task
-        except asyncio.CancelledError:
-            pass
+        # The loop swallows CancelledError and exits cleanly.
+        await d._keepalive_task
     assert any("cancelled" in r.message for r in caplog.records)
+    assert d._keepalive_task.done()
 
 
 @pytest.mark.asyncio
 async def test_keepalive_loop_node_stops_mid_iteration():
-    """Keepalive loop should break if node stops during sleep."""
+    """Keepalive loop should break if node stops during sleep (SCAN-40)."""
     d = FullDevice()
     d.node = MagicMock()
     d.node.is_running = True
@@ -384,11 +389,12 @@ async def test_keepalive_loop_node_stops_mid_iteration():
     d._keepalive_interval = 0.01
 
     await d._start_keepalive()
-    await asyncio.sleep(0.005)
+    # Let the loop start, then stop the node — the loop exits by itself.
+    for _ in range(10):
+        await asyncio.sleep(0)
     d.node.is_running = False
-    await asyncio.sleep(0.05)
-    # Task should have exited.
-    assert d._keepalive_task.done() or d._keepalive_task.cancelled()
+    await asyncio.wait_for(d._keepalive_task, timeout=5.0)
+    assert d._keepalive_task.done()
 
 
 # ---------------------------------------------------------------------------

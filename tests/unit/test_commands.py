@@ -119,19 +119,25 @@ async def test_command_triggers_state_change_and_rule():
 
 
 @pytest.mark.asyncio
-async def test_send_command_between_devices():
-    app = KamioApp()
+async def test_send_command_between_devices(mock_mqtt):
+    """send_command publishes through the broker and resolves the ACK (SCAN-33)."""
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-send-command")
+    await app.start()
     await app.add_device("a", Switch)
     await app.add_device("b", Switch)
-    target = app.devices["b"]
-    result = await target.handle_command("set_power", {"value": True})
-    assert target.power is True
-    assert result == {"power": True}
+    try:
+        ack = await app.devices["a"].send_command("b", "set_power", {"value": True}, timeout=5.0)
+        assert ack.data["status"] == "ok"
+        assert ack.data["result"] == {"power": True}
+        assert app.devices["b"].power is True
+    finally:
+        await app.stop()
 
 
 @pytest.mark.asyncio
 async def test_command_errors_are_propagated():
     app = KamioApp()
     device = await app.add_device("switch", Switch)
-    with pytest.raises(Exception):
+    with pytest.raises(AttributeError, match="unknown_command"):
         await device.handle_command("unknown_command", {})

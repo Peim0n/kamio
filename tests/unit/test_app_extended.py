@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
+from conftest import wait_until
 
 from kamio import Device, KamioApp, command, config, event, state, telemetry
 from kamio.core.custom_nodes import CustomNode
@@ -130,7 +131,7 @@ async def test_event_bus_filter_priority_and_unsubscribe():
 
     await app.publish_event("alert", {"level": "info"})
     await app.publish_event("alert", {"level": "critical"})
-    await asyncio.sleep(0.05)
+    assert await wait_until(lambda: len(received) >= 3, timeout=2.0)
 
     assert ("low", "info") in received
     assert ("low", "critical") in received
@@ -145,32 +146,47 @@ async def test_event_bus_filter_priority_and_unsubscribe():
 def test_ha_discovery_is_none_until_enabled():
     app = KamioApp()
     assert app.ha_discovery is None
+    assert app._ha_discovery_enabled is False
 
     app.enable_ha_discovery(prefix="homeassistant")
     assert app.ha_discovery is not None
     assert app.ha_discovery.discovery_prefix == "homeassistant"
+    assert app._ha_discovery_enabled is True
 
     app.disable_ha_discovery()
+    assert app._ha_discovery_enabled is False
 
 
 @pytest.mark.asyncio
-async def test_device_lifecycle_hooks_fire():
-    app = KamioApp()
+async def test_device_lifecycle_hooks_fire(mock_mqtt):
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-lifecycle-hooks")
     events = []
+    started = asyncio.Event()
+
+    def _on_started(d):
+        events.append("started")
+        started.set()
 
     app.register_hook("on_device_added", lambda d: events.append("added"))
-    app.register_hook("on_device_started", lambda d: events.append("started"))
+    app.register_hook("on_device_started", _on_started)
     app.register_hook("on_device_stopped", lambda d: events.append("stopped"))
 
     await app.add_device("s", Switch)
     assert "added" in events
 
     await app.start()
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(started.wait(), timeout=5.0)
     assert "started" in events
+    device = app.devices["s"]
 
     await app.stop()
     assert "stopped" in events
+    # Shutdown order: device tasks are cancelled and the MQTT client
+    # is disconnected by the time stop() returns.
+    assert device._bg_tasks == set()
+    assert mock_mqtt.is_connected is False
+    assert app.is_running is False
 
 
 def test_device_snapshots():

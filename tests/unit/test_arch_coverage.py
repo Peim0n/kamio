@@ -23,6 +23,7 @@ import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from conftest import InMemoryBroker, wait_until
 
 from kamio import Device, KamioApp, config, event, rule, state, telemetry
 from kamio.app.mixins.devices import DeviceRegistryMixin
@@ -187,13 +188,11 @@ async def test_run_async_starts_and_stops(mock_mqtt):
     mock_mqtt.simulate_connect()
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-run-async")
 
-    # Start _run_async, then stop it after a short delay.
+    # Start _run_async, then stop it once the app reports running.
     task = asyncio.create_task(app._run_async())
-    await asyncio.sleep(0.1)
-    assert app.is_running is True
+    assert await wait_until(lambda: app.is_running, timeout=5.0)
     app._is_running = False  # signal the loop to exit
-    await asyncio.sleep(0.1)
-    await task  # should complete
+    await asyncio.wait_for(task, timeout=5.0)  # should complete
 
 
 @pytest.mark.asyncio
@@ -203,7 +202,7 @@ async def test_run_async_signal_handler_stops(mock_mqtt):
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-signal")
 
     task = asyncio.create_task(app._run_async())
-    await asyncio.sleep(0.1)
+    assert await wait_until(lambda: app.is_running, timeout=5.0)
 
     # Simulate calling stop() directly (as signal handler would).
     await app.stop()
@@ -219,8 +218,6 @@ async def test_run_async_sigterm_completes_shutdown(mock_mqtt, monkeypatch):
     cancel the in-flight shutdown.
     """
     import signal
-
-    from conftest import wait_until
 
     mock_mqtt.simulate_connect()
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-sigterm")
@@ -299,8 +296,7 @@ async def test_schedule_when_running(mock_mqtt):
         executed.append(True)
 
     app._schedule_when_running(_coro())
-    await asyncio.sleep(0.05)
-    assert executed == [True]
+    assert await wait_until(lambda: executed == [True], timeout=2.0)
 
 
 def test_schedule_when_running_no_loop(mock_mqtt):
@@ -318,37 +314,38 @@ def test_schedule_when_running_no_loop(mock_mqtt):
 
 @pytest.mark.asyncio
 async def test_on_mqtt_connect(mock_mqtt):
-    """_on_mqtt_connect should publish mqtt_connected event."""
+    """_on_mqtt_connect should publish mqtt_connected event with broker data."""
     mock_mqtt.simulate_connect()
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-connect-cb")
     app._loop = asyncio.get_running_loop()
     app._mqtt_bg_tasks = set()
 
+    received = []
+    app.subscribe_event("mqtt_connected", received.append)
     app._on_mqtt_connect(mock_mqtt, {}, 0)
-    await asyncio.sleep(0.05)
-    # Event should have been published.
-    events = [e for e in mock_mqtt.published if "mqtt_connected" in str(e)]
-    # The event is published via event_bus, not MQTT — check via mock.
-    # Just verify no crash.
+    assert await wait_until(lambda: len(received) == 1, timeout=2.0)
+    assert "broker" in received[0]
+    assert "rc" in received[0]
 
 
 @pytest.mark.asyncio
 async def test_on_mqtt_disconnect(mock_mqtt):
-    """_on_mqtt_disconnect should publish mqtt_disconnected event."""
+    """_on_mqtt_disconnect should publish mqtt_disconnected event with rc."""
     mock_mqtt.simulate_connect()
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-disconnect-cb")
     app._loop = asyncio.get_running_loop()
     app._mqtt_bg_tasks = set()
 
+    received = []
+    app.subscribe_event("mqtt_disconnected", received.append)
     app._on_mqtt_disconnect(mock_mqtt, 0)
-    await asyncio.sleep(0.05)
-    # Should not crash.
+    assert await wait_until(lambda: len(received) == 1, timeout=2.0)
+    assert "rc" in received[0]
 
 
 @pytest.mark.asyncio
 async def test_on_mqtt_connect_resubscribes(mock_mqtt):
     """Reconnect re-subscribes the app broadcast and running nodes exactly once."""
-    from conftest import wait_until
 
     from kamio.core.mqtt_nodes import BROADCAST_ID
 
@@ -386,7 +383,6 @@ async def test_on_mqtt_connect_resubscribes(mock_mqtt):
 @pytest.mark.asyncio
 async def test_reconnect_skips_stopped_nodes(mock_mqtt):
     """A stopped device node must not be re-subscribed on reconnect (SCAN-20)."""
-    from conftest import wait_until
 
     mock_mqtt.simulate_connect()
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-resub-stopped")
@@ -412,7 +408,6 @@ async def test_reconnect_skips_stopped_nodes(mock_mqtt):
 @pytest.mark.asyncio
 async def test_remove_device_keeps_broadcast_for_others(mock_mqtt):
     """Removing one device must not drop the shared broadcast topic (SCAN-12)."""
-    from conftest import wait_until
 
     from kamio.core.mqtt_nodes import BROADCAST_ID
 
@@ -439,7 +434,6 @@ async def test_remove_device_keeps_broadcast_for_others(mock_mqtt):
 @pytest.mark.asyncio
 async def test_custom_node_resubscribes_and_hooks_on_reconnect(mock_mqtt):
     """Custom nodes re-subscribe and fire hooks on reconnect (SCAN-16)."""
-    from conftest import wait_until
 
     from kamio.core.custom_nodes import CustomNode
 
@@ -478,7 +472,6 @@ async def test_custom_node_resubscribes_and_hooks_on_reconnect(mock_mqtt):
 @pytest.mark.asyncio
 async def test_create_device_rolls_back_on_dropped_suback():
     """A dropped SUBACK must roll back device registration (SCAN-07, SCAN-18)."""
-    from conftest import InMemoryBroker
 
     app = KamioApp(mqtt_broker="mqtt://localhost:1883", client_id="test-suback")
     app.register(SimpleDevice)
@@ -520,7 +513,6 @@ async def test_resubscribe_all_nodes_preserves_running_and_skips_stopped(mock_mq
 
     assert running_node.is_running is True
     assert stopped_node.is_running is False
-    from conftest import wait_until
 
     assert await wait_until(lambda: running_node._resubscribe.await_count == 1, timeout=1.0)
     stopped_node._resubscribe.assert_not_awaited()
@@ -529,10 +521,7 @@ async def test_resubscribe_all_nodes_preserves_running_and_skips_stopped(mock_mq
 @pytest.mark.asyncio
 async def test_on_mqtt_message_routes_to_device(mock_mqtt):
     """_on_mqtt_message should route messages to device nodes."""
-    import json
-
-    from kamio.core import topics as mqtt_topics
-    from kamio.core.envelope import Envelope, EnvelopeType
+    from kamio.core.envelope import Envelope
 
     mock_mqtt.simulate_connect()
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-msg-route")
@@ -540,28 +529,23 @@ async def test_on_mqtt_message_routes_to_device(mock_mqtt):
     await app.start()
     dev = await app.add_device("msg-dev", SimpleDevice)
 
-    # Build a state command envelope and publish it to the device's command topic.
+    # Build a command envelope and publish it to the device's command topic.
     env = Envelope.command(
         source="sender",
         target="msg-dev",
         method="set_power",
         params={"value": True},
     )
-    topic = f"Kamio/v1/msg-dev/sc"
-    payload = json.dumps(
-        {
-            "source": "sender",
-            "target": "msg-dev",
-            "type": "command",
-            "cind": env.cind,
-            "ts": env.ts,
-            "data": {"method": "set_power", "params": {"value": True}},
-        }
-    ).encode()
+    topic = "Kamio/v1/msg-dev/sc"
 
-    app._on_mqtt_message(mock_mqtt, topic, payload, qos=1)
-    await asyncio.sleep(0.1)
-    # Message should have been routed — verify no crash.
+    app._on_mqtt_message(mock_mqtt, topic, env.to_json().encode(), qos=1)
+    # The routed set_power command must actually apply the state change and
+    # publish a COMMAND_ACK back to the sender.
+    assert await wait_until(lambda: dev.power is True, timeout=2.0)
+    assert await wait_until(
+        lambda: any(t == "Kamio/v1/sender/ca" for t, *_ in mock_mqtt.published),
+        timeout=2.0,
+    )
     await app.stop()
 
 
@@ -613,8 +597,7 @@ async def test_run_coro_threadsafe_creates_mqtt_bg_tasks(mock_mqtt):
         executed.append(True)
 
     app._run_coro_threadsafe(_coro())
-    await asyncio.sleep(0.05)
-    assert executed == [True]
+    assert await wait_until(lambda: executed == [True], timeout=2.0)
     assert app._mqtt_bg_tasks is not None
 
 
@@ -1199,7 +1182,6 @@ async def test_unregister_during_custom_node_start_cleans_subs(mock_mqtt):
 @pytest.mark.asyncio
 async def test_register_custom_node_while_running_starts_it(mock_mqtt):
     """Registering a custom node on a running app starts it immediately (SCAN-15)."""
-    from conftest import wait_until
 
     from kamio.core.custom_nodes import CustomNode
 
@@ -1293,3 +1275,126 @@ async def test_unload_all_continues_past_failing_plugin(mock_mqtt):
 
     await loader.unload_all()
     assert loader.list_plugins() == []
+
+
+@pytest.mark.asyncio
+async def test_unload_removes_subscriptions_hooks_and_rules(mock_mqtt):
+    """unload_plugin removes everything the context registered (SCAN-43)."""
+    from kamio.plugins.base import Plugin
+
+    async def rule_fn(event, app):
+        pass
+
+    class ResourcePlugin(Plugin):
+        @property
+        def name(self):
+            return "resource-plug"
+
+        @property
+        def version(self):
+            return "1.0"
+
+        async def on_load(self, app, context=None):
+            pass
+
+        def subscribe_events(self, context):
+            context.subscribe("plugin_evt", self._on_evt)
+
+        def register_hooks(self, context):
+            context.register_hook("plugin_hook", self._hook)
+            context.add_rule(rule_fn)
+
+        async def _on_evt(self, data):
+            pass
+
+        def _hook(self, *args, **kwargs):
+            pass
+
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-res-plug")
+    loader = app.plugin_loader
+    plugin = await loader.load_plugin(ResourcePlugin)
+
+    assert len(app.event_bus.list_subscribers("plugin_evt")) == 1
+    assert len(app.hooks.list_hooks("plugin_hook")) == 1
+    assert any(r.func is rule_fn for r in app.rules.rules)
+
+    await loader.unload_plugin("resource-plug")
+
+    assert app.event_bus.list_subscribers("plugin_evt") == []
+    assert app.hooks.list_hooks("plugin_hook") == []
+    assert not any(r.func is rule_fn for r in app.rules.rules)
+    assert plugin.name not in loader.list_plugins()
+
+
+@pytest.mark.asyncio
+async def test_load_failure_cleans_partially_registered_resources(mock_mqtt):
+    """A plugin whose on_load fails keeps none of its registrations (SCAN-43)."""
+    from kamio.plugins.base import Plugin
+
+    class FailPlugin(Plugin):
+        @property
+        def name(self):
+            return "fail-plug"
+
+        @property
+        def version(self):
+            return "1.0"
+
+        async def on_load(self, app, context=None):
+            context.subscribe("leak_evt", self._on_evt)
+            context.register_hook("leak_hook", self._hook)
+            raise RuntimeError("load boom")
+
+        async def _on_evt(self, data):
+            pass
+
+        def _hook(self, *args, **kwargs):
+            pass
+
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-fail-plug")
+    loader = app.plugin_loader
+
+    with pytest.raises(RuntimeError, match="load boom"):
+        await loader.load_plugin(FailPlugin)
+
+    assert app.event_bus.list_subscribers("leak_evt") == []
+    assert app.hooks.list_hooks("leak_hook") == []
+    assert "fail-plug" not in loader.list_plugins()
+
+
+@pytest.mark.asyncio
+async def test_unload_failure_still_cleans_registrations(mock_mqtt):
+    """on_unload raising must not leave subscriptions/hooks behind (SCAN-43)."""
+    from kamio.plugins.base import Plugin
+
+    class UnloadFailPlugin(Plugin):
+        @property
+        def name(self):
+            return "unload-fail-plug"
+
+        @property
+        def version(self):
+            return "1.0"
+
+        async def on_load(self, app, context=None):
+            pass
+
+        def subscribe_events(self, context):
+            context.subscribe("gone_evt", self._on_evt)
+
+        async def _on_evt(self, data):
+            pass
+
+        async def on_unload(self, app):
+            raise RuntimeError("unload boom")
+
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-unload-fail")
+    loader = app.plugin_loader
+    await loader.load_plugin(UnloadFailPlugin)
+    assert len(app.event_bus.list_subscribers("gone_evt")) == 1
+
+    with pytest.raises(RuntimeError, match="unload boom"):
+        await loader.unload_plugin("unload-fail-plug")
+
+    assert app.event_bus.list_subscribers("gone_evt") == []
+    assert "unload-fail-plug" not in loader.list_plugins()

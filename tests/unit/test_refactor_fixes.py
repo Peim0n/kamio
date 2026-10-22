@@ -90,17 +90,37 @@ def test_device_setattr_validates_choices():
 # ---------------------------------------------------------------------------
 # Bounded _own_state_cinds
 # ---------------------------------------------------------------------------
-def test_own_state_cinds_is_bounded():
+@pytest.mark.asyncio
+async def test_own_state_cinds_is_bounded():
+    """Echo cinds recorded by real state assignment stay bounded (SCAN-29)."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from kamio.device import EchoCache
+
+    limit = 3
     d = BoundedDevice()
+    d.node = MagicMock()
+    d.node.publish = AsyncMock()
+    d.node.is_running = True
+    d.node.device_id = "dev1"
+    d._echo_cache = EchoCache(limit=limit)
 
-    # Simulate many published state cinds without echoes arriving.
-    for i in range(4096 + 100):
-        d._echo_cache.remember(f"cind-{i}")
+    # Drive limit+N real state changes through __setattr__.
+    extra = 3
+    for i in range(limit + extra):
+        d.level = i + 1  # distinct values -> a publish each time
+        for _ in range(10):
+            await asyncio.sleep(0)
 
-    assert len(d._echo_cache) <= 4096
-    # Oldest entries were evicted; newest are still tracked.
-    assert "cind-4195" in d._echo_cache
-    assert "cind-0" not in d._echo_cache
+    cinds = [call.args[0].cind for call in d.node.publish.await_args_list]
+    assert len(cinds) == limit + extra
+    assert len(d._echo_cache) == limit
+    # The `extra` oldest cinds were evicted; the newest `limit` remain.
+    for evicted in cinds[:extra]:
+        assert d._echo_cache.consume(evicted) is False
+    for kept in cinds[extra:]:
+        assert d._echo_cache.consume(kept) is True
 
 
 def test_echo_cache_consume_and_evict():

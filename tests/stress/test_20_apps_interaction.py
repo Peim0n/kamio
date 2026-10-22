@@ -4,8 +4,10 @@ import asyncio
 import random
 
 import pytest
+from conftest import wait_until
 
 from kamio import Device, KamioApp, command, rule, state, telemetry
+from kamio.core.envelope import Envelope, EnvelopeType
 from kamio.core.rules import RuleEvent
 
 
@@ -55,23 +57,23 @@ async def test_command_chain_across_20_apps():
 
     apps = await asyncio.gather(*(build_app(i) for i in range(count)))
     await asyncio.gather(*(app.start() for app in apps))
-    await asyncio.sleep(0.1)
 
-    # Trigger the first device in the chain.
-    await apps[0].devices[device_ids[0]].handle_command("activate", {})
+    try:
+        # Trigger the first device in the chain.
+        await apps[0].devices[device_ids[0]].handle_command("activate", {})
 
-    # Allow async propagation through the broker.
-    await asyncio.sleep(0.5)
-
-    # All relays should have been activated.
-    for i, app in enumerate(apps):
-        assert app.devices[device_ids[i]].active is True, f"relay_{i} was not activated"
-        # Device-level rule should have been triggered
-        assert (
-            app.devices[device_ids[i]].rule_activations >= 1
-        ), f"relay_{i} device rule not triggered"
-
-    await asyncio.gather(*(app.stop() for app in apps))
+        # Wait until propagation through the broker has activated every relay
+        # and its device-level rule.
+        assert await wait_until(
+            lambda: all(
+                apps[i].devices[device_ids[i]].active
+                and apps[i].devices[device_ids[i]].rule_activations >= 1
+                for i in range(count)
+            ),
+            timeout=60.0,
+        ), "not all relays were activated"
+    finally:
+        await asyncio.gather(*(app.stop() for app in apps))
 
 
 @pytest.mark.stress
@@ -85,15 +87,26 @@ async def test_broadcast_to_all_20_apps():
 
     apps = await asyncio.gather(*(build_app(i) for i in range(count)))
     await asyncio.gather(*(app.start() for app in apps))
-    await asyncio.sleep(0.1)
 
-    # Publish a state change broadcast from the first app.
-    # ServerNode should receive Kamio/v1/all/# messages.
-    payload = b'{"source": "app_0", "target": "all", "type": "ds", "data": {"test": 1}}'
-    apps[0].mqtt_client.publish("Kamio/v1/all/ds", payload, qos=1)
+    received = [asyncio.Event() for _ in range(count)]
+    for i, app in enumerate(apps):
+        # ServerNode owns the app-level broadcast wildcard Kamio/v1/all/#.
+        async def _on_broadcast(env, event=received[i]):
+            if env.data.get("test") == 1:
+                event.set()
 
-    await asyncio.sleep(0.1)
-    await asyncio.gather(*(app.stop() for app in apps))
+        app.server_node.on(EnvelopeType.DEVICE_STATE, _on_broadcast)
+
+    try:
+        # Publish a state change broadcast from the first app.
+        payload = Envelope.state(source="app_0", data={"test": 1}).to_json().encode()
+        apps[0].mqtt_client.publish("Kamio/v1/all/ds", payload, qos=1)
+
+        assert await wait_until(
+            lambda: all(ev.is_set() for ev in received), timeout=30.0
+        ), "not all 20 apps received the broadcast"
+    finally:
+        await asyncio.gather(*(app.stop() for app in apps))
 
 
 @pytest.mark.stress
@@ -120,22 +133,24 @@ async def test_mesh_commands_20_apps():
 
     apps = await asyncio.gather(*(build_app(i) for i in range(count)))
     await asyncio.gather(*(app.start() for app in apps))
-    await asyncio.sleep(0.1)
 
-    async def send_from(i: int):
-        sender = apps[i].devices[device_ids[i]]
-        for j in range(count):
-            if i != j:
-                await sender.send_command(device_ids[j], "ping", {}, timeout=60.0)
+    try:
 
-    await asyncio.gather(*(send_from(i) for i in range(count)))
-    await asyncio.sleep(0.1)
+        async def send_from(i: int):
+            sender = apps[i].devices[device_ids[i]]
+            for j in range(count):
+                if i != j:
+                    await sender.send_command(device_ids[j], "ping", {}, timeout=60.0)
 
-    for i, app in enumerate(apps):
-        received = app.devices[device_ids[i]].pings
-        assert received == count - 1, f"app {i} received {received} pings"
+        # send_command awaits the command ACK, so once gather finishes every
+        # ping has been applied on the target device.
+        await asyncio.gather(*(send_from(i) for i in range(count)))
 
-    await asyncio.gather(*(app.stop() for app in apps))
+        for i, app in enumerate(apps):
+            received = app.devices[device_ids[i]].pings
+            assert received == count - 1, f"app {i} received {received} pings"
+    finally:
+        await asyncio.gather(*(app.stop() for app in apps))
 
 
 @pytest.mark.stress
@@ -191,18 +206,21 @@ async def test_telemetry_state_command_cascade_20_apps():
 
     apps = await asyncio.gather(*(build_app(i) for i in range(count)))
     await asyncio.gather(*(app.start() for app in apps))
-    await asyncio.sleep(0.1)
 
-    # Trigger the cascade locally; the device command publishes telemetry,
-    # which the broker echoes back to the same app and drives the rule chain.
-    await apps[0].devices[sensor_ids[0]].handle_command("bump", {})
-    await asyncio.sleep(0.8)
+    try:
+        # Trigger the cascade locally; the device command publishes telemetry,
+        # which the broker echoes back to the same app and drives the rule chain.
+        await apps[0].devices[sensor_ids[0]].handle_command("bump", {})
 
-    for i in range(count):
-        assert apps[i].devices[sensor_ids[i]].bumped is True, f"sensor_{i} not bumped"
-        assert apps[i].devices[relay_ids[i]].active is True, f"relay_{i} not active"
-
-    await asyncio.gather(*(app.stop() for app in apps))
+        assert await wait_until(
+            lambda: all(
+                apps[i].devices[sensor_ids[i]].bumped and apps[i].devices[relay_ids[i]].active
+                for i in range(count)
+            ),
+            timeout=60.0,
+        ), "cascade did not reach all apps"
+    finally:
+        await asyncio.gather(*(app.stop() for app in apps))
 
 
 @pytest.mark.stress
@@ -274,17 +292,21 @@ async def test_three_devices_per_app_full_cross_talk_20x3():
 
     apps = await asyncio.gather(*(build_app(i) for i in range(app_count)))
     await asyncio.gather(*(app.start() for app in apps))
-    await asyncio.sleep(0.1)
 
-    await apps[0].devices[switch_ids[0]].handle_command("turn_on", {})
-    await asyncio.sleep(0.8)
+    try:
+        await apps[0].devices[switch_ids[0]].handle_command("turn_on", {})
 
-    for i in range(app_count):
-        assert apps[i].devices[switch_ids[i]].power is True, f"switch {i} not on"
-        assert apps[i].devices[sensor_ids[i]].sampled is True, f"sensor {i} not sampled"
-        assert apps[i].devices[actuator_ids[i]].moved is True, f"actuator {i} not moved"
-
-    await asyncio.gather(*(app.stop() for app in apps))
+        assert await wait_until(
+            lambda: all(
+                apps[i].devices[switch_ids[i]].power
+                and apps[i].devices[sensor_ids[i]].sampled
+                and apps[i].devices[actuator_ids[i]].moved
+                for i in range(app_count)
+            ),
+            timeout=60.0,
+        ), "cross-talk chain did not reach all apps"
+    finally:
+        await asyncio.gather(*(app.stop() for app in apps))
 
 
 @pytest.mark.stress
@@ -325,13 +347,14 @@ async def test_one_app_100_devices_rule_broadcast():
         await app.add_device(device_id, Toggle)
 
     await app.start()
-    await app.devices[master_id].handle_state({"pulse": True})
-    await asyncio.sleep(2.0)
+    try:
+        await app.devices[master_id].handle_state({"pulse": True})
 
-    for i, device_id in enumerate(device_ids):
-        assert app.devices[device_id].on is True, f"toggle {i} not activated"
-
-    await app.stop()
+        assert await wait_until(
+            lambda: all(app.devices[d].on for d in device_ids), timeout=30.0
+        ), "not all 100 toggles were activated"
+    finally:
+        await app.stop()
 
 
 class Counter(Device):
@@ -397,7 +420,6 @@ async def test_20_apps_100_devices_random_interactions():
 
     apps = await asyncio.gather(*(build_app(i) for i in range(count_apps)))
     await asyncio.gather(*(app.start() for app in apps))
-    await asyncio.sleep(0.1)
 
     sem = asyncio.Semaphore(50)
 
@@ -425,24 +447,31 @@ async def test_20_apps_100_devices_random_interactions():
             else:  # telemetry
                 await apps[tgt_app].devices[tgt_id].publish_telemetry({"temp": 35.0})
 
-    await asyncio.gather(*(act(i) for i in range(interactions)))
-    await asyncio.sleep(2.0)
+    try:
+        await asyncio.gather(*(act(i) for i in range(interactions)))
 
-    total_pings = sum(
-        apps[i].devices[f"counter_{i}_{j}"].pings for i in range(count_apps) for j in range(per_app)
-    )
-    assert total_pings == interactions, f"expected {interactions} total pings, got {total_pings}"
+        # Every action produces exactly one ping — directly, or through the
+        # arm -> telemetry -> rule -> ping chain which completes over MQTT.
+        def total_pings() -> int:
+            return sum(
+                apps[i].devices[f"counter_{i}_{j}"].pings
+                for i in range(count_apps)
+                for j in range(per_app)
+            )
 
-    # Verify device-level rules were triggered
-    total_device_rule_hits = sum(
-        apps[i].devices[f"counter_{i}_{j}"].device_rule_hits
-        for i in range(count_apps)
-        for j in range(per_app)
-    )
-    # Device rules should have been triggered at least some times
-    assert total_device_rule_hits > 0, "Device-level rules were not triggered"
+        assert await wait_until(
+            lambda: total_pings() == interactions, timeout=60.0
+        ), f"expected {interactions} total pings, got {total_pings()}"
 
-    await asyncio.gather(*(app.stop() for app in apps))
+        # Verify device-level rules were triggered
+        total_device_rule_hits = sum(
+            apps[i].devices[f"counter_{i}_{j}"].device_rule_hits
+            for i in range(count_apps)
+            for j in range(per_app)
+        )
+        assert total_device_rule_hits > 0, "Device-level rules were not triggered"
+    finally:
+        await asyncio.gather(*(app.stop() for app in apps))
 
 
 @pytest.mark.stress
@@ -477,16 +506,13 @@ async def test_2_apps_1000_devices_random_interactions():
 
     apps = await asyncio.gather(*(build_app(i) for i in range(count_apps)))
     await asyncio.gather(*(app.start() for app in apps))
-    await asyncio.sleep(0.1)
 
     sem = asyncio.Semaphore(50)
-    expected: dict[tuple[int, str], int] = {}
 
     async def act(_: int) -> None:
         action = random.choice(["ping", "arm", "set_arm", "telemetry"])
         src_app, src_id = random.choice(all_ids)
         tgt_app, tgt_id = random.choice(all_ids)
-        expected[(tgt_app, tgt_id)] = expected.get((tgt_app, tgt_id), 0) + 1
         async with sem:
             if action == "ping":
                 if src_app == tgt_app:
@@ -507,24 +533,31 @@ async def test_2_apps_1000_devices_random_interactions():
             else:  # telemetry
                 await apps[tgt_app].devices[tgt_id].publish_telemetry({"temp": 35.0})
 
-    await asyncio.gather(*(act(i) for i in range(interactions)))
-    await asyncio.sleep(2.0)
+    try:
+        await asyncio.gather(*(act(i) for i in range(interactions)))
 
-    total_pings = sum(
-        apps[i].devices[f"counter_{i}_{j}"].pings for i in range(count_apps) for j in range(per_app)
-    )
-    assert total_pings == interactions, f"expected {interactions} total pings, got {total_pings}"
+        # Every action produces exactly one ping — directly, or through the
+        # arm -> telemetry -> rule -> ping chain which completes over MQTT.
+        def total_pings() -> int:
+            return sum(
+                apps[i].devices[f"counter_{i}_{j}"].pings
+                for i in range(count_apps)
+                for j in range(per_app)
+            )
 
-    # Verify device-level rules were triggered
-    total_device_rule_hits = sum(
-        apps[i].devices[f"counter_{i}_{j}"].device_rule_hits
-        for i in range(count_apps)
-        for j in range(per_app)
-    )
-    # Device rules should have been triggered at least some times
-    assert total_device_rule_hits > 0, "Device-level rules were not triggered"
+        assert await wait_until(
+            lambda: total_pings() == interactions, timeout=60.0
+        ), f"expected {interactions} total pings, got {total_pings()}"
 
-    await asyncio.gather(*(app.stop() for app in apps))
+        # Verify device-level rules were triggered
+        total_device_rule_hits = sum(
+            apps[i].devices[f"counter_{i}_{j}"].device_rule_hits
+            for i in range(count_apps)
+            for j in range(per_app)
+        )
+        assert total_device_rule_hits > 0, "Device-level rules were not triggered"
+    finally:
+        await asyncio.gather(*(app.stop() for app in apps))
 
 
 @pytest.mark.stress
@@ -570,6 +603,8 @@ async def test_20_types_10_each_maximum_load():
 
     app = KamioApp(mqtt_broker="mqtt://localhost:1883", client_id="max_load")
 
+    rule_invocations = 0
+
     for i, cls in enumerate(device_types):
         for k in range(per_type):
             dev_id = f"dev_{i:02d}_{k}"
@@ -582,9 +617,11 @@ async def test_20_types_10_each_maximum_load():
 
             def make_rule(i=i, j=j, field=field):
                 async def rule(event, app):
+                    nonlocal rule_invocations
                     if event.data.get(field) is True and i + 1 < type_count:
                         next_id = device_ids_by_type[i + 1][0]
                         if next_id in app.devices:
+                            rule_invocations += 1
                             await app.devices[next_id].handle_command("cmd_0", {})
 
                 return rule
@@ -601,12 +638,18 @@ async def test_20_types_10_each_maximum_load():
         async with sem:
             await app.devices[dev_id].handle_command(cmd, {})
 
-    await asyncio.gather(*(act(i) for i in range(interactions)))
-    await asyncio.sleep(10.0)
+    try:
+        # handle_state awaits _on_rules_trigger inline, so the whole
+        # rule-driven cascade has drained once gather returns.
+        await asyncio.gather(*(act(i) for i in range(interactions)))
 
-    total_calls = sum(app.devices[dev_id].calls for ids in device_ids_by_type for dev_id in ids)
-    assert total_calls >= int(
-        interactions * 0.4
-    ), f"expected at least {int(interactions * 0.4)} calls, got {total_calls}"
-
-    await app.stop()
+        # Exact count: every direct command plus every rule-triggered cmd_0
+        # increments `calls` exactly once.
+        total_calls = sum(app.devices[dev_id].calls for ids in device_ids_by_type for dev_id in ids)
+        assert total_calls == interactions + rule_invocations, (
+            f"expected exactly {interactions + rule_invocations} calls "
+            f"({interactions} direct + {rule_invocations} rule-triggered), "
+            f"got {total_calls}"
+        )
+    finally:
+        await app.stop()
