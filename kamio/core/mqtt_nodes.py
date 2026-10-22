@@ -83,17 +83,26 @@ class BaseNode:
         self._owns_broadcast = self._broadcast_topic() in topics_to_sub
 
         node_logger = getattr(self, "logger", logger)
+        subscribed: list = []
         first_error: Optional[Exception] = None
         for t in topics_to_sub:
             try:
                 mid = self.mqtt.subscribe(t, qos=1)
                 await self._wait_suback(mid)
+                subscribed.append(t)
                 node_logger.debug(f"Subscribed to: {t}")
             except Exception as e:
                 node_logger.error(f"Failed to subscribe to {t}: {e}")
                 if first_error is None:
                     first_error = e
         if first_error is not None:
+            # Unwind partial subscriptions so a failed start leaves nothing
+            # subscribed behind.
+            for t in subscribed:
+                try:
+                    self.mqtt.unsubscribe(t)
+                except Exception:
+                    pass
             raise first_error
 
     async def _wait_suback(self, mid) -> None:
@@ -330,8 +339,16 @@ class DeviceNode(BaseNode):
             await self._handler.device.on_start(self)
 
     async def stop(self):
+        # A failing on_stop hook must not skip unsubscribe: the node is
+        # stopped and its topics released regardless (SCAN-04).
         if self._handler and hasattr(self._handler, "device"):
-            await self._handler.device.on_stop(self)
+            try:
+                await self._handler.device.on_stop(self)
+            except Exception as e:
+                logger.error(
+                    f"on_stop hook failed for device '{self.device_id}': {e}",
+                    exc_info=True,
+                )
         await super().stop()
 
     async def _handle_message(self, payload: bytes):

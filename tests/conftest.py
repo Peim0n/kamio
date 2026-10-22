@@ -266,11 +266,8 @@ async def _fail_on_callback_exceptions():
         yield
     finally:
         loop.set_exception_handler(previous)
-        assert not contexts, (
-            f"{len(contexts)} asyncio exception(s) during test: "
-            + "; ".join(
-                repr(c.get("exception") or c.get("message")) for c in contexts
-            )
+        assert not contexts, f"{len(contexts)} asyncio exception(s) during test: " + "; ".join(
+            repr(c.get("exception") or c.get("message")) for c in contexts
         )
 
 

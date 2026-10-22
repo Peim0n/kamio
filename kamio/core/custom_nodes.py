@@ -5,6 +5,7 @@ import inspect
 import logging
 from abc import ABC, abstractmethod
 from fnmatch import fnmatch
+from functools import partial
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
@@ -78,8 +79,16 @@ class CustomNode(ABC):
         self._is_running = False
 
     async def _start_running(self) -> None:
-        """Run :meth:`start` and mark the node as running."""
-        await self.start()
+        """Run :meth:`start` and mark the node as running.
+
+        If ``start()`` raises (or the task is cancelled), any subscriptions
+        the node managed to make are torn down so they never leak.
+        """
+        try:
+            await self.start()
+        except BaseException:
+            self._teardown_subscriptions()
+            raise
         self._is_running = True
 
     async def _stop_running(self) -> None:
@@ -204,6 +213,9 @@ class CustomNodeManager:
         self._nodes: Dict[str, CustomNode] = {}
         # Track fire-and-forget stop() tasks from unregister_node.
         self._stop_tasks: set = set()
+        # Nodes registered while the app is running are started by task;
+        # keep the handles so unregister/stop_all can cancel them (SCAN-15).
+        self._start_tasks: Dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Registration
@@ -225,6 +237,36 @@ class CustomNodeManager:
         self._nodes[name] = node
         logger.info(f"Registered custom node: '{name}' prefix={node.topic_prefix!r}")
 
+        # Documented lifecycle: a node registered while the app is running
+        # starts immediately.  The task handle is kept so unregister_node()
+        # can cancel it before it leaks subscriptions (SCAN-15).
+        loop = getattr(self._app, "_loop", None)
+        if (
+            getattr(self._app, "_is_running", False)
+            and isinstance(loop, asyncio.AbstractEventLoop)
+            and loop.is_running()
+        ):
+            task = loop.create_task(self._start_and_log(name, node))
+            self._start_tasks[name] = task
+            task.add_done_callback(partial(self._forget_start_task, name))
+
+    def _forget_start_task(self, name: str, task: asyncio.Task) -> None:
+        """Done-callback removing a finished start task from tracking."""
+        self._start_tasks.pop(name, None)
+
+    async def _start_and_log(self, name: str, node: CustomNode) -> None:
+        """Start a node registered while the app was already running."""
+        try:
+            await node._start_running()
+        except Exception as e:
+            logger.error(f"Failed to start custom node '{name}': {e}", exc_info=True)
+            return
+        # If the node was unregistered while start() was in flight, undo it.
+        if self._nodes.get(name) is not node:
+            node._teardown_subscriptions()
+            return
+        logger.info(f"Started custom node: '{name}'")
+
     def unregister_node(self, name: str) -> None:
         """
         Unregister a node by name.
@@ -237,13 +279,33 @@ class CustomNodeManager:
             logger.warning(f"unregister_node: '{name}' not found")
             return
         node = self._nodes.pop(name)
-        # Clean up the node's MQTT subscriptions.  stop() is async, so
-        # schedule it on the app's event loop if one is available; fall back
-        # to a synchronous best-effort unsubscribe otherwise.
+
+        # Cancel a still-in-flight start task; its own teardown cleans up
+        # whatever subscriptions it had already made.
+        start_task = self._start_tasks.pop(name, None)
+        if start_task is not None and not start_task.done():
+            start_task.cancel()
+
+        # Clean up the node's MQTT subscriptions.  Cleanup is driven by
+        # ``_subscriptions`` rather than ``is_running`` so a node whose
+        # start() failed partway cannot leak topics (SCAN-15).  stop() is
+        # async, so schedule it on the app's event loop if one is available;
+        # fall back to a synchronous best-effort unsubscribe otherwise.
         if node.is_running:
             loop = getattr(self._app, "_loop", None)
-            if loop is not None and not loop.is_closed():
-                task = loop.create_task(node.stop())
+            if isinstance(loop, asyncio.AbstractEventLoop) and not loop.is_closed():
+
+                async def _stop_and_teardown() -> None:
+                    try:
+                        await node.stop()
+                    except Exception as e:
+                        logger.error(f"Error stopping custom node '{name}': {e}")
+                    finally:
+                        # Guaranteed cleanup even when a subclassed stop()
+                        # forgets to call super().
+                        node._teardown_subscriptions()
+
+                task = loop.create_task(_stop_and_teardown())
                 # Track the task so errors are logged and it isn't GC'd early.
                 self._stop_tasks.add(task)
                 task.add_done_callback(self._stop_tasks.discard)
@@ -251,6 +313,8 @@ class CustomNodeManager:
                 # No running loop — do a synchronous best-effort cleanup of
                 # subscriptions so they don't leak past the node's lifetime.
                 node._teardown_subscriptions()
+        elif node._subscriptions:
+            node._teardown_subscriptions()
         logger.info(f"Unregistered custom node: '{name}'")
 
     def get_node(self, name: str) -> Optional[CustomNode]:
@@ -267,7 +331,11 @@ class CustomNodeManager:
 
     async def start_all(self) -> None:
         """Start all registered nodes. Errors in one node don't stop others."""
-        for name, node in self._nodes.items():
+        # Snapshot: unregister_node() may mutate _nodes while a start()
+        # is in flight.
+        for name, node in list(self._nodes.items()):
+            if self._nodes.get(name) is not node:
+                continue
             try:
                 await node._start_running()
             except Exception as e:
@@ -281,6 +349,12 @@ class CustomNodeManager:
                     },
                 )
                 continue
+            # If the node was unregistered while its start() was in flight,
+            # undo it — a node that is no longer registered must not keep
+            # subscriptions (SCAN-15).
+            if self._nodes.get(name) is not node:
+                node._teardown_subscriptions()
+                continue
             logger.info(f"Started custom node: '{name}'")
             await self._app.event_bus.publish(
                 "custom_node_started",
@@ -292,20 +366,29 @@ class CustomNodeManager:
 
     async def stop_all(self) -> None:
         """Stop all registered nodes in reverse registration order."""
+        # Cancel any starts still in flight — their own teardown handles
+        # partial subscriptions.
+        for task in list(self._start_tasks.values()):
+            task.cancel()
+        self._start_tasks.clear()
+
         for name, node in reversed(list(self._nodes.items())):
-            if not node.is_running:
-                continue
-            try:
-                await node._stop_running()
-                logger.info(f"Stopped custom node: '{name}'")
-                await self._app.event_bus.publish(
-                    "custom_node_stopped",
-                    {
-                        "node_name": name,
-                    },
-                )
-            except Exception as e:
-                logger.error(f"Failed to stop custom node '{name}': {e}", exc_info=True)
+            if node.is_running:
+                try:
+                    await node._stop_running()
+                    logger.info(f"Stopped custom node: '{name}'")
+                    await self._app.event_bus.publish(
+                        "custom_node_stopped",
+                        {
+                            "node_name": name,
+                        },
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to stop custom node '{name}': {e}", exc_info=True)
+            # Subscriptions are tracked independently of is_running — a node
+            # whose start() failed partway may still hold some (SCAN-15).
+            if node._subscriptions:
+                node._teardown_subscriptions()
 
     # ------------------------------------------------------------------
     # Reconnection
@@ -332,9 +415,7 @@ class CustomNodeManager:
             try:
                 await node.on_connect()
             except Exception as e:
-                logger.error(
-                    f"on_connect hook failed for custom node '{name}': {e}", exc_info=True
-                )
+                logger.error(f"on_connect hook failed for custom node '{name}': {e}", exc_info=True)
 
     async def on_disconnect(self) -> None:
         """Fire ``on_disconnect`` hooks for all running nodes."""

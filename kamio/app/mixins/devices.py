@@ -88,31 +88,39 @@ class DeviceRegistryMixin:
         with self._device_nodes_lock:
             self._device_nodes[device_id] = node
 
-        # Start the node; roll back registration on failure.
-        if self._is_running:
-            try:
+        try:
+            # Start the node when the app is already running; otherwise
+            # app.start() starts it later.
+            if self._is_running:
                 await node.start()
-            except Exception as e:
-                logger.error(f"Failed to start node for '{device_id}': {e}", exc_info=True)
-                with self._device_nodes_lock:
-                    self._device_nodes.pop(device_id, None)
-                self.registry.unregister_instance(device_id)
-                raise
 
-        await self.hooks.trigger("on_device_added", device_instance)
-        await self.event_bus.publish(
-            "device_added",
-            {
-                "device_id": device_id,
-                "device_type": device_instance.device_type(),
-                "device": device_instance,
-            },
-        )
-        if getattr(self, "_ha_discovery_enabled", False):
+            await self.hooks.trigger("on_device_added", device_instance)
+            await self.event_bus.publish(
+                "device_added",
+                {
+                    "device_id": device_id,
+                    "device_type": device_instance.device_type(),
+                    "device": device_instance,
+                },
+            )
+            if getattr(self, "_ha_discovery_enabled", False):
+                try:
+                    await self.ha_discovery.announce(device_instance)
+                except Exception as e:
+                    logger.warning(f"Failed to announce device '{device_id}' to HA: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create device '{device_id}': {e}", exc_info=True)
+            # Roll back: node.stop() runs device.on_stop() → shutdown(), which
+            # disconnects the driver opened by on_init (SCAN-05); then drop
+            # all registrations so the device is fully removed (SCAN-04).
             try:
-                await self.ha_discovery.announce(device_instance)
-            except Exception as e:
-                logger.warning(f"Failed to announce device '{device_id}' to HA: {e}")
+                await node.stop()
+            except Exception as stop_err:
+                logger.warning(f"Error stopping node during rollback: {stop_err}")
+            with self._device_nodes_lock:
+                self._device_nodes.pop(device_id, None)
+            self.registry.unregister_instance(device_id)
+            raise
         result: Device = device_instance
         return result
 
@@ -143,11 +151,15 @@ class DeviceRegistryMixin:
                 logger.warning(f"Failed to clear HA discovery for '{device_id}': {e}")
 
         node = self._device_nodes.get(device_id)
-        if node:
-            await node.stop()
+        try:
+            if node:
+                await node.stop()
+        finally:
+            # Registration is dropped even when node.stop() raises so the
+            # device cannot linger in a half-removed state.
             with self._device_nodes_lock:
                 self._device_nodes.pop(device_id, None)
-        self.registry.unregister_instance(device_id)
+            self.registry.unregister_instance(device_id)
 
     async def add_device(self: Any, device_id: str, device_class: Type[Device], **kwargs) -> Device:
         """Create and register a device instance.

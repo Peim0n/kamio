@@ -739,12 +739,11 @@ def test_register_async_callback_replaces_existing():
 
 
 def test_register_async_callback_starts_node_if_app_running():
-    """register_async_callback should start the node if app is running."""
+    """register_async_callback registers the node; the manager auto-starts it."""
     app = MagicMock()
     app.list_custom_nodes = MagicMock(return_value=[])
     app.register_custom_node = MagicMock()
     app.is_running = True
-    app._run_coro_threadsafe = MagicMock()
 
     d = FullDevice()
     d._app = app
@@ -752,7 +751,9 @@ def test_register_async_callback_starts_node_if_app_running():
     d.node.mqtt = MagicMock()
 
     d.register_async_callback("test/topic", lambda t, p: None)
-    app._run_coro_threadsafe.assert_called_once()
+    # CustomNodeManager.register_node() starts the node itself when the app
+    # is running — see test_register_custom_node_while_running_starts_it.
+    app.register_custom_node.assert_called_once()
 
 
 def test_unregister_async_callback_finds_and_removes():

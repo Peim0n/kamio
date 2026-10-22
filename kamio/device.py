@@ -331,9 +331,14 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
                 await self._keepalive_task
             except asyncio.CancelledError:
                 pass
-        if self.driver:
-            await self.driver.disconnect()
-        await self.cancel_all_tasks()
+        try:
+            await self.cancel_all_tasks()
+        finally:
+            # The driver connection must be closed even when task
+            # cancellation fails — and task cancellation runs first so a
+            # failing disconnect cannot leave tasks behind.
+            if self.driver:
+                await self.driver.disconnect()
 
     async def _start_keepalive(self):
         """Start the keepalive loop for this device."""
@@ -704,10 +709,9 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
             if existing_node and existing_node.topic_prefix == topic:
                 self.app.unregister_custom_node(existing_name)
         node = _CallbackNode(self.node.mqtt, topic, callback)
+        # register_node() starts the node immediately when the app is
+        # already running (documented CustomNode lifecycle).
         self.app.register_custom_node(node_name, node)
-        # If the app is already running, start the node immediately.
-        if self.app.is_running and self._app is not None:
-            self._app._run_coro_threadsafe(node.start())
         self.logger.debug(f"Registered async callback for topic: {topic}")
 
     def unregister_async_callback(self, topic: str) -> None:

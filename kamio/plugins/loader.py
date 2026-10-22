@@ -325,9 +325,16 @@ class PluginLoader:
         return self.list_plugins()
 
     async def unload_all(self) -> None:
-        """Unload all plugins in reverse load order."""
+        """Unload all plugins in reverse load order.
+
+        A plugin whose unload fails is logged and skipped — it must not
+        prevent the remaining plugins from being unloaded.
+        """
         for name in reversed(self._load_order.copy()):
-            await self.unload_plugin(name)
+            try:
+                await self.unload_plugin(name)
+            except Exception as e:
+                logger.error(f"Failed to unload plugin '{name}': {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Internal helpers

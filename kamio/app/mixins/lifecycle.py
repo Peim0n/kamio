@@ -53,6 +53,16 @@ class LifecycleMixin:
                     loop.remove_signal_handler(sig)
                 except Exception:
                     pass
+            # If a signal handler scheduled stop() concurrently, wait for it
+            # to finish — otherwise returning here lets asyncio.run() cancel
+            # the in-flight shutdown mid-flight.
+            if stop_task is not None and not stop_task.done():
+                try:
+                    await asyncio.shield(stop_task)
+                except asyncio.CancelledError:
+                    # We were cancelled but the shielded stop keeps running;
+                    # drain it so shutdown completes.
+                    await asyncio.gather(stop_task, return_exceptions=True)
             await self.stop()
 
     def run(self: Any) -> None:
@@ -87,22 +97,35 @@ class LifecycleMixin:
         logger.info("KamioApp starting...")
         await self.hooks.trigger("on_before_start")
 
-        if not self.mqtt_client.is_connected:
-            if self._mqtt_conn is None:
-                raise RuntimeError("MQTT client is not connected and no MqttConnection configured")
-            await self._mqtt_conn.connect()
+        try:
+            if not self.mqtt_client.is_connected:
+                if self._mqtt_conn is None:
+                    raise RuntimeError(
+                        "MQTT client is not connected and no MqttConnection configured"
+                    )
+                await self._mqtt_conn.connect()
 
-        await self.server_node.start()
-        # The app owns the shared broadcast wildcard for this client.
-        await self._subscribe_broadcast()
+            await self.server_node.start()
+            # The app owns the shared broadcast wildcard for this client.
+            await self._subscribe_broadcast()
 
-        # Snapshot device nodes so concurrent add/remove does not mutate the
-        # dict while we iterate during startup.
-        for node in list(self._device_nodes.values()):
-            await node.start()
+            # Snapshot device nodes so concurrent add/remove does not mutate the
+            # dict while we iterate during startup.
+            for node in list(self._device_nodes.values()):
+                await node.start()
 
-        await self.rules.start()
-        await self.custom_nodes.start_all()
+            await self.rules.start()
+            await self.custom_nodes.start_all()
+            # Activate hot reload if enable() was deferred because no event
+            # loop was running yet (SCAN-11).
+            self.hot_reload.activate_if_pending()
+        except Exception as e:
+            # Roll back whatever did start: stop nodes, unload plugins,
+            # disconnect MQTT — a half-started app must not leak resources.
+            logger.error(f"KamioApp startup failed, rolling back: {e}", exc_info=True)
+            await self._teardown()
+            raise
+
         # Mark as running only after all components have started successfully.
         self._is_running = True
         logger.info("KamioApp started")
@@ -117,11 +140,26 @@ class LifecycleMixin:
         logger.info("KamioApp stopping...")
         await self.hooks.trigger("on_before_stop")
         self._is_running = False
+        await self._teardown()
+
+        logger.info("KamioApp stopped")
+        try:
+            await self.hooks.trigger("on_after_stop")
+            await self.event_bus.publish("app_stop", {})
+        except Exception as e:
+            logger.error(f"Error during post-stop hooks/events: {e}", exc_info=True)
+
+    async def _teardown(self: Any) -> None:
+        """Stop every started component and disconnect MQTT.
+
+        Shared by ``stop()`` and the ``start()`` rollback path; works even
+        when the app never reached the running state.  Each cleanup step is
+        wrapped individually so a failure in one step cannot skip the
+        remaining cleanup and leak resources (tasks, connections,
+        subscriptions).
+        """
         timeout = getattr(self, "shutdown_timeout", self.shutdown_timeout)
 
-        # Each cleanup step is wrapped in its own try/except so that a
-        # failure in one step does not skip the remaining cleanup, which
-        # would leak resources (tasks, connections, subscriptions).
         async def _safe(step: str, coro):
             try:
                 await asyncio.wait_for(coro, timeout=timeout)
@@ -137,6 +175,13 @@ class LifecycleMixin:
 
         await _safe("server_node.stop", self.server_node.stop())
 
+        # Unload plugins after nodes stop but before MQTT disconnect so
+        # PluginContext tasks/subscriptions do not outlive shutdown.
+        await _safe("plugins.unload_all", self.plugin_loader.unload_all())
+
+        # Stop file watchers activated by a deferred hot-reload enable.
+        await _safe("hot_reload.disable", self.hot_reload.disable())
+
         # Await any lingering background tasks scheduled by the MQTT
         # dispatcher / fire-and-forget helpers so they do not outlive the
         # app (and so their resources are released before disconnect).
@@ -146,13 +191,6 @@ class LifecycleMixin:
             await _safe("mqtt.disconnect", self._mqtt_conn.disconnect())
         elif self.mqtt_client.is_connected:
             await _safe("mqtt_client.disconnect", self.mqtt_client.disconnect())
-
-        logger.info("KamioApp stopped")
-        try:
-            await self.hooks.trigger("on_after_stop")
-            await self.event_bus.publish("app_stop", {})
-        except Exception as e:
-            logger.error(f"Error during post-stop hooks/events: {e}", exc_info=True)
 
     async def _await_bg_tasks(self: Any, timeout: float) -> None:
         """Wait for background tasks in ``_bg_tasks`` / ``_mqtt_bg_tasks`` to finish.

@@ -122,9 +122,7 @@ class MqttDispatchMixin:
         single node can never remove broadcasts for the others.  Called on
         start and after every reconnect.
         """
-        mid = self.mqtt_client.subscribe(
-            f"{mqtt_topics.BASE}/{BROADCAST_ID}/#", qos=1
-        )
+        mid = self.mqtt_client.subscribe(f"{mqtt_topics.BASE}/{BROADCAST_ID}/#", qos=1)
         waiter = getattr(self.mqtt_client, "_kamio_wait_for_suback", None)
         if waiter is not None:
             await waiter(mid)

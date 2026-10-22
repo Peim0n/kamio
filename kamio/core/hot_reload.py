@@ -119,6 +119,9 @@ class HotReloadManager:
         self._pending: Dict[str, asyncio.TimerHandle] = {}
         self._observer: Optional[Any] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # enable() called with no running loop is deferred until
+        # activate_if_pending() runs inside KamioApp.start().
+        self._pending_enable = False
         # Track fire-and-forget handler tasks so errors are not silently lost.
         self._handler_tasks: set = set()
 
@@ -162,26 +165,43 @@ class HotReloadManager:
         logger.debug(f"Watching directory: {entry.path} pattern={pattern!r}")
 
     def enable(self) -> None:
-        """Start watching files. Uses watchdog if installed, otherwise polling."""
-        if self._enabled:
+        """Start watching files. Uses watchdog if installed, otherwise polling.
+
+        Watchers must be bound to a *running* event loop.  When called with
+        no running loop the request is deferred: ``KamioApp.start()``
+        activates it via :meth:`activate_if_pending` once a loop exists,
+        and ``KamioApp.stop()`` disables it again.  With a running loop it
+        activates immediately.
+        """
+        if self._enabled or self._pending_enable:
             return
-        self._enabled = True
 
         # Capture the loop that owns this manager. Watchdog and polling may call
         # back from other threads, so scheduling must be marshalled here.
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._loop = asyncio.get_event_loop()
+            self._pending_enable = True
+            logger.info("Hot-reload enable deferred until KamioApp.start()")
+            return
 
+        self._enabled = True
         if _WATCHDOG_AVAILABLE and self._entries:
             self._start_watchdog()
         else:
             self._start_polling()
         logger.info("HotReloadManager enabled")
 
+    def activate_if_pending(self) -> None:
+        """Activate a deferred :meth:`enable` now that a loop is running."""
+        if not self._pending_enable:
+            return
+        self._pending_enable = False
+        self.enable()
+
     async def disable(self) -> None:
         """Stop watching files."""
+        self._pending_enable = False
         self._enabled = False
         if self._task and not self._task.done():
             self._task.cancel()
