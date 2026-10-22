@@ -129,6 +129,9 @@ class Envelope:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> Optional[Envelope]:
         """Parse a dict into an Envelope. Returns None on error."""
+        if not isinstance(d, dict):
+            logger.error(f"Envelope.from_dict: expected dict, got {type(d).__name__}")
+            return None
         try:
             raw_type = d.get("type", "unknown")
             env_type = EnvelopeType(raw_type)

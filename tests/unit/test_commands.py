@@ -141,3 +141,40 @@ async def test_command_errors_are_propagated():
     device = await app.add_device("switch", Switch)
     with pytest.raises(AttributeError, match="unknown_command"):
         await device.handle_command("unknown_command", {})
+
+
+@pytest.mark.asyncio
+async def test_driver_command_publishes_executed_event():
+    """Driver-handled commands must also emit device_command_executed —
+    previously only the decorated-method path published it."""
+    app = KamioApp()
+    driver = DriverRelay()
+    device = await app.add_device("switch", Switch, driver=driver)
+    events = []
+    app.event_bus.subscribe("device_command_executed", lambda data: events.append(data))
+
+    result = await device.handle_command("driver_toggle", {"value": True})
+    assert result == {"driver": True, "command": "driver_toggle"}
+    assert len(events) == 1
+    assert events[0]["command"] == "driver_toggle"
+    assert events[0]["device_id"] == "switch"
+
+
+class Dimmer(Device):
+    level: int = state(default=0, writable=True)
+
+
+@pytest.mark.asyncio
+async def test_auto_routed_set_field_publishes_executed_event():
+    """The set_<field> auto-route is a command execution too — it must emit
+    device_command_executed like the other success paths."""
+    app = KamioApp()
+    device = await app.add_device("dimmer", Dimmer)
+    events = []
+    app.event_bus.subscribe("device_command_executed", lambda data: events.append(data))
+
+    result = await device.handle_command("set_level", {"value": 5})
+    assert result == {"level": 5}
+    assert device.level == 5
+    assert len(events) == 1
+    assert events[0]["command"] == "set_level"

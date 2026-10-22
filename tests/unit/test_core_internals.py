@@ -1697,3 +1697,85 @@ class TestStateManager:
         env = Envelope.telemetry(source="dev1", data={"x": 1})
         await sm.handle_incoming(env)  # should be a no-op for state mirror
         assert sm.get_state("dev1") == {}
+
+
+# ---------------------------------------------------------------------------
+# Regression: envelope non-dict input, send_ack mutation, set_ error ACK
+# ---------------------------------------------------------------------------
+
+
+class TestEnvelopeFromDictNonDict:
+    def test_from_dict_list_returns_none(self):
+        # JSON-valid but not an object — must not raise AttributeError.
+        assert Envelope.from_dict([1, 2, 3]) is None
+
+    def test_from_dict_string_returns_none(self):
+        assert Envelope.from_dict("not-a-dict") is None
+
+    def test_from_dict_none_returns_none(self):
+        assert Envelope.from_dict(None) is None
+
+    def test_from_json_non_object_returns_none(self):
+        assert Envelope.from_json("[1, 2, 3]") is None
+        assert Envelope.from_json("42") is None
+
+
+class TestSendAckMutation:
+    @pytest.mark.asyncio
+    async def test_send_ack_does_not_mutate_result_dict(self, mock_mqtt):
+        """send_ack injects 'status' into the ACK payload — it must not leak
+        into the caller's dict."""
+        device = Light()
+        node = DeviceNode("light1", mock_mqtt)
+        device.node = node
+        handler = DeviceHandler(device, node)
+
+        result = {"value": 1}
+        env = Envelope.command(source="0", target="light1", method="toggle")
+        await handler.send_ack(env, result=result)
+
+        assert result == {"value": 1}  # caller's dict unchanged
+
+        _, payload, _, _ = node.mqtt.published[-1]
+        ack = Envelope.from_json(payload)
+        assert ack.data["status"] == "ok"
+        assert ack.data["value"] == 1
+
+
+class TestSetFieldCommandRouting:
+    @pytest.mark.asyncio
+    async def test_set_non_writable_field_sends_error_ack(self, mock_mqtt):
+        """set_<telemetry> must not ACK 'ok' — the field is not a writable
+        state, so the command must fall through to the error path."""
+        device = Light()
+        node = DeviceNode("light1", mock_mqtt)
+        device.node = node
+        handler = DeviceHandler(device, node)
+
+        env = Envelope.command(
+            source="0", target="light1", method="set_temp", params={"value": 99.0}
+        )
+        await handler._handle_command(env)
+
+        _, payload, _, _ = node.mqtt.published[-1]
+        ack = Envelope.from_json(payload)
+        assert ack.data["status"] == "error"
+        assert device.temp == 20.0  # unchanged
+
+    @pytest.mark.asyncio
+    async def test_set_config_field_sends_error_ack(self, mock_mqtt):
+        """set_<config> is likewise not a writable-state command."""
+        device = Light()
+        node = DeviceNode("light1", mock_mqtt)
+        device.node = node
+        handler = DeviceHandler(device, node)
+
+        env = Envelope.command(
+            source="0", target="light1", method="set_host", params={"value": "x"}
+        )
+        await handler._handle_command(env)
+
+        _, payload, _, _ = node.mqtt.published[-1]
+        ack = Envelope.from_json(payload)
+        assert ack.data["status"] == "error"
+        assert device.host == "localhost"  # unchanged

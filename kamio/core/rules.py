@@ -80,6 +80,13 @@ class Rule:
         run_on_start: bool = False,
         description: Optional[str] = None,
     ):
+        if interval is not None:
+            if not isinstance(interval, (int, float)) or isinstance(interval, bool):
+                raise TypeError(f"Rule interval must be a number of seconds, got {interval!r}")
+            if interval <= 0:
+                # asyncio.sleep(0) would make the interval loop a busy-spin
+                # that re-runs the rule every event-loop tick.
+                raise ValueError(f"Rule interval must be positive, got {interval!r}")
         self.func = func
         self.device_class = device_class
         self.interval = interval

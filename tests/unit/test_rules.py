@@ -396,3 +396,20 @@ async def test_set_rules_replaces_rule_set_and_cancels_tasks():
     assert r1.task.done()
     assert r2.task.done()
     await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_rule_interval_must_be_positive():
+    """interval <= 0 would busy-spin the scheduler via asyncio.sleep(0);
+    non-numeric intervals crash later inside the loop."""
+    from kamio.core.rules import Rule
+
+    async def _r(event, app):
+        pass
+
+    with pytest.raises(ValueError):
+        Rule(_r, interval=0)
+    with pytest.raises(ValueError):
+        Rule(_r, interval=-1.5)
+    with pytest.raises(TypeError):
+        Rule(_r, interval="5s")

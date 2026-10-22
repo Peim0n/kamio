@@ -137,3 +137,29 @@ async def test_telemetry_tasks_cancelled_on_stop(mock_mqtt):
 
     assert all(t.done() for t in telem_tasks)
     assert not [t for t in device._bg_tasks if t.get_name().startswith("telemetry_")]
+
+
+@pytest.mark.asyncio
+async def test_start_telemetry_ignores_finished_tasks(mock_mqtt):
+    """A completed telemetry_* task lingering in _bg_tasks (its discard
+    callback has not run yet) must not block a fresh telemetry start —
+    e.g. right after reinitialize()."""
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="tel-restart")
+    await app.start()
+    try:
+        device = await app.add_device("w", Weather)
+        await device.cancel_all_tasks()
+
+        # Inject a stale, already-finished task with a telemetry_ name.
+        stale = asyncio.create_task(asyncio.sleep(0), name="telemetry_stale")
+        await stale
+        device._bg_tasks.add(stale)
+
+        await device.start_telemetry()
+        active = [
+            t for t in device._bg_tasks if t.get_name().startswith("telemetry_") and not t.done()
+        ]
+        assert active, "telemetry scheduler was not restarted"
+    finally:
+        await app.stop()

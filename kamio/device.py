@@ -480,9 +480,7 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
         if isinstance(python_type, type):
             if python_type is bool:
                 if not isinstance(value, bool):
-                    raise ValueError(
-                        f"Invalid type for {field.name}: expected bool, got {value!r}"
-                    )
+                    raise ValueError(f"Invalid type for {field.name}: expected bool, got {value!r}")
             elif value is not None:
                 if isinstance(value, bool):
                     raise ValueError(
@@ -829,7 +827,9 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
         """
         if self.driver:
             try:
-                return await self.driver.execute(method_name, params)
+                result = await self.driver.execute(method_name, params)
+                await self._publish_command_executed(method_name, params, result)
+                return result
             except NotImplementedError:
                 pass
             except Exception as e:
@@ -845,7 +845,9 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
                     field = self.Kamio_FIELDS[field_name]
                     if field.kind == "state" and field.writable:
                         value = params.get("value", params.get("field_value"))
-                        return await self.handle_state({field_name: value})
+                        result = await self.handle_state({field_name: value})
+                        await self._publish_command_executed(method_name, params, result)
+                        return result
             available = list(self.Kamio_COMMANDS.keys())
             raise AttributeError(
                 f"Command '{method_name}' not found on {self.device_type()!r}. "
@@ -857,18 +859,23 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
         else:
             result = method(self, **params)
 
-        if self._app is not None:
-            device_id = self.node.device_id if self.node else None
-            await self._app.event_bus.publish(
-                "device_command_executed",
-                {
-                    "device_id": device_id,
-                    "command": method_name,
-                    "params": params,
-                    "result": result,
-                },
-            )
+        await self._publish_command_executed(method_name, params, result)
         return result
+
+    async def _publish_command_executed(self, method_name: str, params: dict, result: Any) -> None:
+        """Publish ``device_command_executed`` on the app event bus."""
+        if self._app is None:
+            return
+        device_id = self.node.device_id if self.node else None
+        await self._app.event_bus.publish(
+            "device_command_executed",
+            {
+                "device_id": device_id,
+                "command": method_name,
+                "params": params,
+                "result": result,
+            },
+        )
 
     async def handle_event(self, event_name: str, payload: dict) -> None:
         """

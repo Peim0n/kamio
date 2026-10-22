@@ -81,7 +81,10 @@ class TelemetryMixin(TaskManagerMixin):
         if not self.node or not self.node.is_running:
             return
 
-        if any(t.get_name().startswith("telemetry_") for t in self._bg_tasks):
+        # Ignore finished tasks still awaiting their discard callback — a
+        # completed scheduler must not block a fresh start (e.g. after
+        # reinitialize()).
+        if any(t.get_name().startswith("telemetry_") and not t.done() for t in self._bg_tasks):
             return
 
         min_freq = self._get_min_freq()

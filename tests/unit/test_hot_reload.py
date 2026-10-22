@@ -598,9 +598,9 @@ def _rules_file_content(func_name: str = "my_rule", use_correct_kwargs: bool = T
             f'"run_on_start": False, "description": "test rule"}}'
         )
     else:
-        # Wrong key "device" — will cause TypeError in Rule(**kwargs).
+        # An unknown kwarg — will cause TypeError in Rule(**kwargs).
         kwargs_line = (
-            f'{func_name}._Kamio_rule_kwargs = {{"device": None, '
+            f'{func_name}._Kamio_rule_kwargs = {{"bogus_param": None, '
             f'"interval": None, "fields": None, "enabled": True, '
             f'"run_on_start": False, "description": "bad rule"}}'
         )
@@ -1054,3 +1054,128 @@ class TestIntegration:
         finally:
             await mgr.disable()
         assert events[-1]["config"] == {"v": 2}
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: real-marker kwargs, rule de-duplication, late observer watch
+# ---------------------------------------------------------------------------
+
+_RULED_DEVICES_FILE = """\
+from kamio import Device, state, rule
+
+class RuledDevice(Device):
+    power: bool = state(default=False)
+
+    @rule(fields=["power"])
+    async def on_power(self, event, app):
+        pass
+"""
+
+
+class TestReloadRulesRealMarker:
+    @pytest.mark.asyncio
+    async def test_reload_rules_with_app_rule_marker_kwargs(self, mock_mqtt, tmp_path):
+        """The @app.rule decorator stores kwargs under the "device" key while
+        Rule() expects "device_class".  A real rules file produced by the
+        decorator must reload without a TypeError."""
+        app = KamioApp(mqtt_broker=mock_mqtt, client_id="test")
+
+        @app.rule(fields=["power"])
+        async def my_rule(event, app):
+            pass
+
+        mod_file = tmp_path / "rules_real.py"
+        mod_file.write_text(
+            "async def my_rule(event, app):\n"
+            "    pass\n"
+            'my_rule._Kamio_rule_kwargs = {"device": None, "interval": None, '
+            '"fields": ["power"], "enabled": True, "run_on_start": False, '
+            '"description": "real marker"}\n'
+        )
+
+        result = await reload_rules_from_file(str(mod_file), app)
+        assert result is True
+        rule_obj = app.rules.rules[0]
+        assert rule_obj.func.__name__ == "my_rule"
+        assert rule_obj.fields == ["power"]
+        assert rule_obj.description == "real marker"
+
+
+class TestReloadDevicesRules:
+    @pytest.mark.asyncio
+    async def test_reload_devices_does_not_duplicate_rules(self, mock_mqtt, tmp_path):
+        """Re-registering a reloaded device class must replace, not duplicate,
+        its device-level rules."""
+        app = KamioApp(mqtt_broker=mock_mqtt, client_id="test")
+
+        class RuledDevice(Device):
+            power: bool = state(default=False)
+
+            @rule(fields=["power"])
+            async def on_power(self, event, app):
+                pass
+
+        app.register(RuledDevice)
+        assert len(app.rules.rules) == 1
+
+        mod_file = tmp_path / "ruled_dev.py"
+        mod_file.write_text(_RULED_DEVICES_FILE)
+
+        result = await reload_devices_from_file(str(mod_file), app)
+        assert result is True
+        # Still exactly one rule — now bound to the reloaded class object.
+        assert len(app.rules.rules) == 1
+        new_cls = app.registry.get_class("ruleddevice")
+        assert new_cls is not RuledDevice
+        assert app.rules.rules[0].device_class is new_cls
+
+    @pytest.mark.asyncio
+    async def test_reload_devices_drops_rules_when_class_loses_them(self, mock_mqtt, tmp_path):
+        """A reloaded class without Kamio_RULES must drop the old class's rules."""
+        app = KamioApp(mqtt_broker=mock_mqtt, client_id="test")
+
+        class RuledDevice(Device):
+            power: bool = state(default=False)
+
+            @rule(fields=["power"])
+            async def on_power(self, event, app):
+                pass
+
+        app.register(RuledDevice)
+        assert len(app.rules.rules) == 1
+
+        mod_file = tmp_path / "ruled_dev.py"
+        mod_file.write_text(_DEVICES_FILE.replace("ReloadedDevice", "RuledDevice"))
+
+        result = await reload_devices_from_file(str(mod_file), app)
+        assert result is True
+        assert len(app.rules.rules) == 0
+
+
+class TestLateObserverWatch:
+    def test_watch_after_enable_schedules_observer_dir(self, mock_mqtt, tmp_path):
+        """Entries added while the watchdog observer runs must be scheduled —
+        previously only directories present at enable() time were watched."""
+        app = KamioApp(mqtt_broker=mock_mqtt, client_id="test")
+        mgr = HotReloadManager(app)
+
+        scheduled = []
+
+        class _FakeObserver:
+            def schedule(self, handler, directory, recursive=False):
+                scheduled.append(directory)
+
+        mgr._observer = _FakeObserver()
+        mgr._observer_handler = object()
+
+        d1 = tmp_path / "d1"
+        d1.mkdir()
+        d2 = tmp_path / "d2"
+        d2.mkdir()
+
+        mgr.watch_file(str(d1 / "a.txt"), lambda p: None)
+        mgr.watch_directory(str(d2), "*.py", lambda p: None)
+        # Same directory again — must not double-schedule.
+        mgr.watch_file(str(d1 / "b.txt"), lambda p: None)
+
+        assert scheduled == [str(d1), str(d2)]

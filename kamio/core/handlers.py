@@ -122,10 +122,14 @@ class DeviceHandler:
                     params = {**params, **extra}  # merge injected kwargs
 
             # Route set_<field> commands to handle_state for HA compatibility.
+            # Only writable *state* fields qualify — anything else falls
+            # through to handle_command() which raises AttributeError, so a
+            # bogus setter produces an error ACK instead of a fake "ok".
             if method is None and method_name.startswith("set_"):
                 field_name = method_name[4:]
                 value = params.get("value", params.get("field_value"))
-                if field_name in self.device.Kamio_FIELDS:
+                field = self.device.Kamio_FIELDS.get(field_name)
+                if field is not None and field.kind == "state" and field.writable:
                     applied = await self.device.handle_state({field_name: value})
                     await self.send_ack(
                         env,
@@ -228,7 +232,9 @@ class DeviceHandler:
                            ``original_env.type`` (STATE_ACK for state, COMMAND_ACK otherwise).
             meta:          Optional metadata dict attached to the ACK envelope.
         """
-        data = result or {}
+        # Copy the result dict — mutating the caller's dict would leak the
+        # injected "status" key back into their data.
+        data = dict(result) if result else {}
         data["status"] = status
         final_type = response_type
         if not final_type:

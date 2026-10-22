@@ -118,6 +118,8 @@ class HotReloadManager:
         self._enabled = False
         self._pending: Dict[str, asyncio.TimerHandle] = {}
         self._observer: Optional[Any] = None
+        self._observer_handler: Optional[Any] = None
+        self._watched_dirs: set = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # enable() called with no running loop is deferred until
         # activate_if_pending() runs inside KamioApp.start().
@@ -144,6 +146,7 @@ class HotReloadManager:
             is_dir=False,
         )
         self._entries.append(entry)
+        self._watch_with_observer(entry)
         logger.debug(f"Watching file: {entry.path}")
 
     def watch_directory(self, directory: str, pattern: str, handler: Callable) -> None:
@@ -162,6 +165,7 @@ class HotReloadManager:
             is_dir=True,
         )
         self._entries.append(entry)
+        self._watch_with_observer(entry)
         logger.debug(f"Watching directory: {entry.path} pattern={pattern!r}")
 
     def enable(self) -> None:
@@ -223,6 +227,8 @@ class HotReloadManager:
             self._observer.stop()
             await asyncio.to_thread(self._observer.join)
             self._observer = None
+            self._observer_handler = None
+            self._watched_dirs.clear()
         logger.info("HotReloadManager disabled")
 
     def _start_polling(self) -> None:
@@ -237,16 +243,27 @@ class HotReloadManager:
         if Observer is None:
             return
         self._observer = Observer()
-        handler = _WatchdogHandler(self)
-        watched_dirs = set()
+        self._observer_handler = _WatchdogHandler(self)
+        self._watched_dirs.clear()
         for entry in self._entries:
-            if entry.is_dir:
-                watched_dirs.add(entry.path)
-            else:
-                watched_dirs.add(os.path.dirname(entry.path))
-        for directory in watched_dirs:
-            self._observer.schedule(handler, directory, recursive=False)
+            self._watch_with_observer(entry)
         self._observer.start()
+
+    def _watch_with_observer(self, entry: _WatchEntry) -> None:
+        """Schedule an entry's directory with the running observer, if any.
+
+        Watch entries added *after* :meth:`enable` would otherwise be
+        invisible to watchdog — only directories present at enable time were
+        scheduled.  Already-watched directories are skipped so entries in
+        the same directory do not double-schedule.
+        """
+        if self._observer is None or self._observer_handler is None:
+            return
+        directory = entry.path if entry.is_dir else os.path.dirname(entry.path)
+        if directory in self._watched_dirs:
+            return
+        self._observer.schedule(self._observer_handler, directory, recursive=False)
+        self._watched_dirs.add(directory)
 
     @property
     def is_enabled(self) -> bool:
@@ -392,7 +409,13 @@ async def reload_rules_from_file(file_path: str, app: "KamioApp") -> bool:
             if name in old_by_name:
                 old_rule = old_by_name[name]
                 app.rules.remove_rule(old_rule)
-                new_rule = Rule(func, **rule_kwargs)
+                # The @app.rule decorator stores the device class under the
+                # "device" key while Rule.__init__ expects "device_class" —
+                # normalise so either spelling works.
+                kwargs = dict(rule_kwargs)
+                if "device" in kwargs:
+                    kwargs.setdefault("device_class", kwargs.pop("device"))
+                new_rule = Rule(func, **kwargs)
                 app.rules.add_rule(new_rule)
                 replaced += 1
                 logger.info(f"[hot-reload] Updated rule: {name}")
@@ -443,9 +466,17 @@ async def reload_devices_from_file(file_path: str, app: "KamioApp") -> bool:
             attr = getattr(module, attr_name)
             if isinstance(attr, type) and issubclass(attr, Device) and attr is not Device:
                 type_name = attr.device_type()
+                old_cls = app.registry.get_class(type_name)
+                # Drop the previous class's device-level rules — add_rule()
+                # appends unconditionally, so without this every reload
+                # duplicates the rules (and a reloaded class without rules
+                # would keep the old class's rules firing).
+                if old_cls is not None:
+                    for rule in list(app.rules.rules):
+                        if rule.device_class is old_cls:
+                            app.rules.remove_rule(rule)
                 # Use app.register() so device-level rules are re-registered.
                 app.registry.register_class(attr)
-                # Re-register device-level rules if the class has any.
                 if hasattr(attr, "Kamio_RULES") and attr.Kamio_RULES:
                     app.register(attr)
                 found += 1
