@@ -2,6 +2,15 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.0b7] - 2026-11-01
+
+### Performance
+- **No idle Tasks per inbound MQTT message** — `_on_mqtt_message` now schedules `CustomNodeManager.route_message` only when `has_nodes()` is true, and publishes `mqtt_message_received` only when `EventBus.has_subscribers()` is true. Before this, every message created two asyncio Tasks even when nothing consumed them (#13).
+- **MQTT payloads decoded once** — the router parses the envelope once and shares it across the server node and every device node, so a broadcast to N devices no longer runs `json.loads` N times (`BaseNode.accepts` / `BaseNode.dispatch_envelope`). The per-message "Message received" log is now a lazy `DEBUG` instead of an eager `INFO` f-string (#14).
+- **LoggingPlugin file I/O off the event loop** — records go through a `QueueHandler` onto a background `QueueListener` thread, so writes and rollover of the `RotatingFileHandler` no longer block the loop (#10).
+- **Rule engine hot path cached** — `inspect.signature` parameter counts are cached per rule function, and the MRO-derived base device types are cached per device class (weak keys, safe with hot-reload) (#12).
+- **Interval rules share one state snapshot** — `StateManager.get_states_snapshot()` returns a copy that is rebuilt only after a state update, instead of copying the whole state table on every tick of every interval rule. Rules that fire between updates receive the same dict, so treat `event.data` as read-only (#11).
+
 ## [1.0.0b4] - 2026-08-01
 
 ### Fixed
