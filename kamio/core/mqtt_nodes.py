@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, Optional
 
@@ -168,37 +169,61 @@ class BaseNode:
     def is_running(self) -> bool:
         return self._is_running
 
+    def accepts(self, dev_id: Optional[str]) -> bool:
+        """Return True if this running node should handle messages for ``dev_id``."""
+        return (
+            self._is_running
+            and self._loop is not None
+            and (dev_id == self.device_id or dev_id == BROADCAST_ID)
+        )
+
     def dispatch(self, topic: str, payload: bytes) -> None:
         """Public entry point for routing an MQTT message to this node."""
+        dev_id, msg_type = topics.parse(topic)
+        if not self.accepts(dev_id):
+            return
+        self.dispatch_envelope(topic, msg_type, Envelope.from_json(payload))
+
+    def dispatch_envelope(
+        self, topic: str, msg_type: Optional[str], env: Optional[Envelope]
+    ) -> None:
+        """Route an already parsed and decoded message to this node.
+
+        Lets a router decode a payload once and hand the same envelope to
+        every node (e.g. on broadcasts).  Envelopes are treated as read-only
+        by handlers; each node receives its own shallow copy.  The caller is
+        responsible for topic filtering (see :meth:`accepts`).
+        """
         # Snapshot the running state and loop reference to avoid a race where
         # the node is stopped between the check and create_task.
         loop = self._loop
         if not self._is_running or loop is None:
             return
 
-        dev_id, msg_type = topics.parse(topic)
+        node_logger = getattr(self, "logger", logger)
+        node_logger.debug("Message received for %s: %s, type=%s", self.device_id, topic, msg_type)
 
-        if dev_id != self.device_id and dev_id != BROADCAST_ID:
+        if env is None:
             return
 
-        node_logger = getattr(self, "logger", logger)
-        node_logger.info(f"Message received for {self.device_id}: {topic}, type={msg_type}")
-
         try:
-            task = loop.create_task(self._handle_message(payload))
+            task = loop.create_task(self._handle_envelope(copy.copy(env)))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         except RuntimeError as e:
             # Event loop closed during shutdown — log at debug level so the
             # message loss is traceable without spamming during normal stops.
-            node_logger.debug(f"Could not dispatch message on {self.device_id}: {e}")
+            node_logger.debug("Could not dispatch message on %s: %s", self.device_id, e)
 
     async def _handle_message(self, payload: bytes):
-        """Asynchronous processing of incoming message."""
+        """Decode a raw payload and process it."""
         env = Envelope.from_json(payload)
         if not env:
             return
+        await self._handle_envelope(env)
 
+    async def _handle_envelope(self, env: Envelope):
+        """Asynchronous processing of incoming message."""
         handler = self._handlers.get(env.type)
         if handler:
             try:
@@ -262,12 +287,8 @@ class ServerNode(BaseNode):
         self.state_manager = state_manager
         self.command_manager = command_manager
 
-    async def _handle_message(self, payload: bytes):
+    async def _handle_envelope(self, env: Envelope):
         """Route server-side messages to state or command managers."""
-        env = Envelope.from_json(payload)
-        if not env:
-            return
-
         if self.state_manager:
             await self.state_manager.handle_incoming(env)
             if env.type == EnvelopeType.DEVICE_TELEMETRY:
@@ -351,19 +372,15 @@ class DeviceNode(BaseNode):
                 )
         await super().stop()
 
-    async def _handle_message(self, payload: bytes):
+    async def _handle_envelope(self, env: Envelope):
         """Redirects all messages to external handler if present."""
-        env = Envelope.from_json(payload)
-        if not env:
-            return
-
         if self._handler:
             try:
                 await self._handler(env)
             except Exception as e:
                 logger.exception(f"Handler error in DeviceNode {self.device_id}: {e}")
         else:
-            await super()._handle_message(payload)
+            await super()._handle_envelope(env)
 
     async def emit_event(self, event_name: str, data: dict, qos: int = 1):
         """Publish a DEVICE_EVENT envelope for this device."""

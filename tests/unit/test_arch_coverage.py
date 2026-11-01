@@ -550,6 +550,32 @@ async def test_on_mqtt_message_routes_to_device(mock_mqtt):
 
 
 @pytest.mark.asyncio
+async def test_on_mqtt_message_broadcast_decodes_once(mock_mqtt):
+    """A broadcast is JSON-decoded once and delivered to every device node."""
+    from unittest.mock import AsyncMock, patch
+
+    from kamio.core.envelope import Envelope
+
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-msg-bcast")
+    app.register(SimpleDevice)
+    await app.start()
+    devs = [await app.add_device(f"bcast-{i}", SimpleDevice) for i in range(3)]
+    for dev in devs:
+        dev.handle_event = AsyncMock()
+
+    env = Envelope.event(source="sender", event_name="ping", data={"n": 1})
+    with patch.object(Envelope, "from_json", wraps=Envelope.from_json) as from_json:
+        app._on_mqtt_message(mock_mqtt, "Kamio/v1/all/de", env.to_json().encode(), qos=1)
+        assert from_json.call_count == 1
+
+    assert await wait_until(lambda: all(d.handle_event.await_count == 1 for d in devs), timeout=2.0)
+    for dev in devs:
+        dev.handle_event.assert_awaited_once_with("ping", {"n": 1})
+    await app.stop()
+
+
+@pytest.mark.asyncio
 async def test_on_mqtt_message_dropped_when_not_running(mock_mqtt):
     """_on_mqtt_message should drop messages when app is not running."""
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-msg-drop")
