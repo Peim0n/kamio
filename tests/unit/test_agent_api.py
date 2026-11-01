@@ -5,11 +5,11 @@ from __future__ import annotations
 import pytest
 
 from kamio import (
+    Device,
     DriverNotAllowedError,
     KamioApp,
     KamioError,
     PolicyError,
-    Device,
     event,
     make_device_class,
     state,
@@ -124,7 +124,7 @@ async def test_dsl_make_device_and_when(mock_mqtt):
 
 
 def test_errors_are_kamio_and_builtin():
-    from kamio import ValidationError, DeviceNotFoundError
+    from kamio import DeviceNotFoundError, ValidationError
 
     assert issubclass(ValidationError, ValueError)
     assert issubclass(DeviceNotFoundError, KamioError)
