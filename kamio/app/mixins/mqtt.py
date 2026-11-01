@@ -5,6 +5,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from kamio.core import topics as mqtt_topics
+from kamio.core.envelope import Envelope
 from kamio.core.mqtt_nodes import BROADCAST_ID
 
 logger = logging.getLogger("Kamio.app")
@@ -156,15 +157,24 @@ class MqttDispatchMixin:
                 "mqtt_message_received",
                 {"topic": topic, "payload": payload, "qos": qos},
             )
-            self.server_node.dispatch(topic, payload)
-            device_id, _ = mqtt_topics.parse(topic)
+            device_id, msg_type = mqtt_topics.parse(topic)
+            targets = [self.server_node]
             # Snapshot the device-node map so a concurrent add/remove cannot
             # raise KeyError / change dict size during iteration.
             nodes = self._device_nodes
             if device_id and device_id in nodes:
-                nodes[device_id].dispatch(topic, payload)
+                targets.append(nodes[device_id])
             elif device_id == BROADCAST_ID:
-                for node in list(nodes.values()):
-                    node.dispatch(topic, payload)
+                targets.extend(list(nodes.values()))
+            # Decode the payload at most once and share it across nodes.
+            decoded = False
+            env: Optional[Envelope] = None
+            for node in targets:
+                if not node.accepts(device_id):
+                    continue
+                if not decoded:
+                    env = Envelope.from_json(payload)
+                    decoded = True
+                node.dispatch_envelope(topic, msg_type, env)
         except Exception as e:
             logger.exception(f"Error dispatching MQTT message on {topic!r}: {e}")
