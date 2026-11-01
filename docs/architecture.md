@@ -1,4 +1,4 @@
-# Kamio Core Architecture v1.0.0b4
+# Kamio Core Architecture
 
 ## Module Structure
 
