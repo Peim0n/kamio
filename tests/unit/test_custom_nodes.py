@@ -175,3 +175,12 @@ async def test_custom_node_manager_route_message(mock_mqtt_client):
     handled = await app.custom_nodes.route_message("bridge/cmd/power", b"on")
     assert handled is True
     assert node.received == [("bridge/cmd/power", b"on")]
+
+
+def test_custom_node_manager_has_nodes(mock_mqtt_client):
+    app = KamioApp()
+    assert app.custom_nodes.has_nodes() is False
+    app.custom_nodes.register_node("bridge", BridgeNode(mock_mqtt_client, "bridge"))
+    assert app.custom_nodes.has_nodes() is True
+    app.custom_nodes.unregister_node("bridge")
+    assert app.custom_nodes.has_nodes() is False

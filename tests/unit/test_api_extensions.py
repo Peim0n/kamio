@@ -6,7 +6,7 @@ import logging.handlers
 import os
 import threading
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,6 +38,28 @@ async def test_event_bus_priority_invokes_high_priority_first():
     await bus.publish("test", {"value": 1})
 
     assert order == ["high", "low"]
+
+
+def test_event_bus_has_subscribers_tracks_subscribe_unsubscribe():
+    bus = EventBus()
+
+    def cb(data: dict):
+        pass
+
+    assert bus.has_subscribers("x") is False
+    bus.subscribe("x", cb)
+    assert bus.has_subscribers("x") is True
+    assert bus.has_subscribers("y") is False
+    bus.unsubscribe("x", cb)
+    assert bus.has_subscribers("x") is False
+
+
+@pytest.mark.asyncio
+async def test_event_bus_publish_without_subscribers_does_not_dispatch():
+    bus = EventBus()
+    with patch.object(bus, "_dispatch") as dispatch:
+        await bus.publish("nobody", {"value": 1})
+    dispatch.assert_not_called()
 
 
 @pytest.mark.asyncio
