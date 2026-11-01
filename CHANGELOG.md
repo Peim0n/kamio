@@ -16,6 +16,44 @@ All notable changes to Kamio will be documented in this file.
 - **Rule engine hot path cached** — `inspect.signature` parameter counts are cached per rule function, and the MRO-derived base device types are cached per device class (weak keys, safe with hot-reload) (#12).
 - **Interval rules share one state snapshot** — `StateManager.get_states_snapshot()` returns a copy that is rebuilt only after a state update, instead of copying the whole state table on every tick of every interval rule. Rules that fire between updates receive the same dict, so treat `event.data` as read-only (#11).
 
+## [1.0.0b6] - 2026-10-22
+
+### Fixed
+- **Hot-reload of rules always rolled back** — `@app.rule` stores `_Kamio_rule_kwargs` under the `"device"` key while `Rule()` expects `device_class`; the kwarg is now normalized so real rules files reload without a `TypeError`.
+- **Hot-reload duplicated device rules** — re-registering a reloaded class appended rules on top of the old class's; the old class's rules are now removed first (and dropped entirely when the reloaded class declares none).
+- **Watchdog ignored watches added after `enable()`** — only directories present at enable time were scheduled; new entries are now scheduled on the running observer with directory de-duplication.
+- **`set_<telemetry>`/`set_<config>` ACKed `ok`** — setter commands for non-writable-state fields now fall through to the error path instead of returning a fake success ACK.
+- **`send_ack` mutated the caller's dict** — the injected `status` key no longer leaks into the result dict passed by the caller.
+- **Missing `device_command_executed` events** — the event is now published on every success path: driver-handled commands, `@command` methods, and the `set_<field>` auto-route.
+- **Telemetry could fail to restart** — a finished `telemetry_*` task still awaiting its discard callback no longer blocks `start_telemetry()` (e.g. after `reinitialize()`).
+- **`interval=0` busy-spun the rule scheduler** — `Rule` now validates `interval` (`>0` number required) at construction.
+- **`Envelope.from_dict` raised on non-dict input** — JSON-valid non-object payloads now return `None` as documented.
+
+## [1.0.0b5] - 2026-10-22
+
+### Added
+- **CI: examples job** — all `examples/*.py` run in CI against a real `eclipse-mosquitto:2` broker; long-running demos are capped via `KAMIO_EXAMPLE_MAX_DURATION` (`examples/_bounded.py`).
+- **CI: gmqtt compatibility matrix** — `gmqtt==0.8.0` and latest `<0.9` × Python 3.10/3.13.
+- **CI: dedicated stress job** running `pytest tests/stress -m stress`.
+- **Kamio-side reconnect backoff** — `MqttConnection` implements `reconnect_min_delay`/`reconnect_max_delay` via gmqtt 0.8's public API.
+- **Explicit SUBACK/UNSUBACK waiters** — subscription acknowledgements are awaited through Kamio adapters on the client.
+
+### Fixed
+- **gmqtt 0.8 callback semantics** — `on_disconnect(packet)` signature and public `reconnect_delay`/`reconnect_retries` properties replace private-attribute access.
+- **Device field annotations** — string annotations are resolved to real runtime types (`LOC-01` regression fix).
+- **Reconnect resubscription** — device/custom nodes restore subscriptions after reconnect; the app owns the shared `Kamio/v1/all/#` broadcast subscription so stopping one node cannot cut broadcasts for others.
+- **Lifecycle rollback** — failed `start()`/`add_device()` fully unwinds (nodes stopped, subscriptions released, MQTT disconnected).
+- **Plugin unload cleanup** — `PluginContext` tracks event subscriptions, hooks, rules and background tasks and tears them down on unload or failed load; failed background tasks are logged.
+- **Telnet driver** — read timeout now raises `TimeoutError` and closes the connection instead of returning a fake `ok` result.
+- **Echo suppression** — bounded `EchoCache` (`OrderedDict`, cap 4096) replaces the unbounded own-cind set.
+- **Correlation manager** — lock-free asyncio implementation, pending-request cap, publish coroutine closed when overloaded.
+- **Validation** — `_validate_value` coerces values to concrete field types (`"42"` → `42`), rejects non-convertible values and `bool` coercion into non-bool fields.
+- **`CustomNode.matches("")`** — an empty topic prefix is a catch-all, matching documentation and tests.
+- **LoggingPlugin overhead** — event payloads are no longer deep-copied when the configured event level is disabled.
+
+### Tests
+- ~25 deterministic regression tests across unit and stress suites; fixed sleeps replaced with `wait_until`/`wait_for` polling helpers; all 30 examples updated to match the implemented API and pass against a real broker.
+
 ## [1.0.0b4] - 2026-08-01
 
 ### Fixed

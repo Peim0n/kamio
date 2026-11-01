@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kamio"
-version = "1.0.0b8"
+version = "1.0.0b9"
 description = "Declarative asynchronous IoT framework for Python with MQTT support"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 authors = [
     {name = "Данил Сытников", email = "d.sytnikov@int-sys.ru"},
 ]
@@ -24,7 +24,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Topic :: Home Automation",
     "Topic :: System :: Hardware",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
 
@@ -91,7 +90,7 @@ kamio = ["py.typed"]
 # Black
 [tool.black]
 line-length = 100
-target-version = ["py39", "py310", "py311", "py312", "py313"]
+target-version = ["py310", "py311", "py312", "py313"]
 include = '\.pyi?$'
 
 # isort

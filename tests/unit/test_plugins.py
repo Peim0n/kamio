@@ -142,3 +142,156 @@ async def test_plugin_task_cancel_not_logged(caplog):
         await asyncio.sleep(0)
     assert task not in ctx._tasks
     assert not [r for r in caplog.records if r.name == "Kamio.plugin.alpha"]
+
+
+# ---------------------------------------------------------------------------
+# Coverage push: PluginContext helpers, directory loading, dependency edge cases
+# ---------------------------------------------------------------------------
+
+import types
+
+from kamio.plugins.loader import PluginLoader
+
+
+class DeltaPlugin(Plugin):
+    name = "delta"
+    version = "1.0.0"
+
+    async def on_load(self, app, context=None):
+        pass
+
+
+class EmptyDepPlugin(Plugin):
+    name = "emptydep"
+    version = "1.0.0"
+
+    @property
+    def dependencies(self):
+        return [""]
+
+    async def on_load(self, app, context=None):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_plugin_context_helpers():
+    app = KamioApp()
+    ctx = PluginContext(app, "myplug")
+    assert ctx.logger.name == "Kamio.plugin.myplug"
+    assert ctx.plugin_name == "myplug"
+
+    cb = lambda data: None
+    ctx.subscribe("my_event", cb)
+    assert cb in app.event_bus.list_subscribers("my_event")
+    ctx.unsubscribe("my_event", cb)
+    assert cb not in app.event_bus.list_subscribers("my_event")
+
+    hook = lambda d: None
+    ctx.register_hook("on_device_added", hook)
+    assert hook in app.hooks.list_hooks("on_device_added")
+    ctx.unregister_hook("on_device_added", hook)
+    assert hook not in app.hooks.list_hooks("on_device_added")
+
+    # register() is an alias for register_hook()
+    ctx.register("on_device_added", hook)
+    assert hook in app.hooks.list_hooks("on_device_added")
+
+    received = []
+    app.event_bus.subscribe("plugin_evt", lambda d: received.append(d))
+    await ctx.publish_event("plugin_evt", {"x": 1})
+    assert received and received[0]["x"] == 1
+
+    regs = ctx.registrations
+    assert "events" in regs and "hooks" in regs
+
+
+@pytest.mark.asyncio
+async def test_cleanup_context_rule_removal_failure_warns(caplog):
+    app = KamioApp()
+    loader = app.plugin_loader
+    ctx = PluginContext(app, "x")
+    ctx._rules.append(lambda: None)
+
+    async def _boom(func):
+        raise RuntimeError("cannot remove")
+
+    original = app.remove_rule
+    app.remove_rule = _boom
+    try:
+        # Must not raise — the failure is logged as a warning.
+        await loader._cleanup_context(ctx)
+    finally:
+        app.remove_rule = original
+
+
+@pytest.mark.asyncio
+async def test_load_from_module_without_plugin_raises():
+    loader = PluginLoader(KamioApp())
+    with pytest.raises(ImportError):
+        await loader.load_from_module("json")
+
+
+@pytest.mark.asyncio
+async def test_load_from_module_loads_plugin():
+    mod = types.ModuleType("fake_plug_mod")
+    mod.DeltaPlugin = DeltaPlugin
+    import sys
+
+    sys.modules["fake_plug_mod"] = mod
+    try:
+        loader = PluginLoader(KamioApp())
+        plugin = await loader.load_from_module("fake_plug_mod")
+        assert plugin.name == "delta"
+    finally:
+        sys.modules.pop("fake_plug_mod", None)
+
+
+@pytest.mark.asyncio
+async def test_load_plugins_from_directory(tmp_path, caplog):
+    d = tmp_path / "plugins"
+    d.mkdir()
+    (d / "plug_good.py").write_text(
+        "from kamio.plugins.base import Plugin\n"
+        "class DirPlugin(Plugin):\n"
+        "    name = 'dirplug'\n"
+        "    version = '1.0'\n"
+        "    async def on_load(self, app, context=None): pass\n"
+    )
+    (d / "plug_bad.py").write_text("raise RuntimeError('import boom')\n")
+    (d / "_private.py").write_text("raise RuntimeError('should be skipped')\n")
+    (d / "not_python.txt").write_text("not a py file")
+
+    app = KamioApp()
+    loaded = await app.plugin_loader.load_plugins_from_directory(str(d))
+    assert [p.name for p in loaded] == ["dirplug"]
+    # The broken module is logged and skipped, the underscore file ignored.
+    assert app.get_plugin("dirplug") is not None
+
+
+@pytest.mark.asyncio
+async def test_load_plugins_from_directory_missing_dir():
+    loader = PluginLoader(KamioApp())
+    loaded = await loader.load_plugins_from_directory("definitely_not_a_dir_xyz")
+    assert loaded == []
+
+
+@pytest.mark.asyncio
+async def test_empty_dependency_name_raises():
+    loader = PluginLoader(KamioApp())
+    with pytest.raises(ValueError, match="empty dependency"):
+        await loader.load_plugin(EmptyDepPlugin)
+
+
+def test_find_plugin_class_ignores_abstract():
+    mod = types.ModuleType("m")
+    mod.Plugin = Plugin  # the abstract base itself must be skipped
+    assert PluginLoader._find_plugin_class(mod) is None
+
+
+@pytest.mark.asyncio
+async def test_load_order_property():
+    app = KamioApp()
+    await app.load_plugin(AlphaPlugin)
+    assert app.plugin_loader.load_order == ["alpha"]
+    await app.load_plugin(DeltaPlugin)
+    assert app.plugin_loader.load_order == ["alpha", "delta"]
