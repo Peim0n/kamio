@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import weakref
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Dict, List, Optional, Tuple, Type
 
@@ -96,6 +97,21 @@ class Rule:
         self.description = description or (func.__doc__ if func.__doc__ else "")
         self.last_run = 0.0
         self.task: Optional[asyncio.Task] = None
+        # Parameter counts keyed by "called bound to a device instance";
+        # cached per function object since signatures never change.
+        self._param_count_func: Optional[Callable[..., Any]] = None
+        self._param_counts: Dict[bool, int] = {}
+
+    def _param_count(self, func_to_call: Callable[..., Any], bound: bool) -> int:
+        """Return ``len(signature(func_to_call).parameters)``, cached per rule function."""
+        if self._param_count_func is not self.func:
+            self._param_count_func = self.func
+            self._param_counts = {}
+        count = self._param_counts.get(bound)
+        if count is None:
+            count = len(inspect.signature(func_to_call).parameters)
+            self._param_counts[bound] = count
+        return count
 
     @property
     def device_type(self) -> Optional[str]:
@@ -139,18 +155,10 @@ class Rule:
             if is_device_level_rule:
                 # Bind unbound method to device instance for device-level rules
                 func_to_call = self.func.__get__(device_instance, type(device_instance))
-                sig = inspect.signature(func_to_call)
-                param_count = len(sig.parameters)
-            elif hasattr(self.func, "__self__"):
-                # Already a bound method
-                func_to_call = self.func
-                sig = inspect.signature(func_to_call)
-                param_count = len(sig.parameters)
             else:
-                # Regular function (app-level rule)
+                # Already a bound method, or a regular function (app-level rule)
                 func_to_call = self.func
-                sig = inspect.signature(func_to_call)
-                param_count = len(sig.parameters)
+            param_count = self._param_count(func_to_call, bound=is_device_level_rule)
 
             # Call with appropriate arguments based on parameter count
             if param_count >= 2:
@@ -190,6 +198,11 @@ class RuleEngine:
         self._bg_tasks: set[asyncio.Task] = set()
         self._is_running = False
         self._event_rules_by_type: Dict[Optional[str], List[Rule]] = defaultdict(list)
+        # Base-class device types per device class (weak keys so hot-reloaded
+        # classes can be garbage-collected).
+        self._base_types_cache: "weakref.WeakKeyDictionary[type, Tuple[str, ...]]" = (
+            weakref.WeakKeyDictionary()
+        )
         # Lock to protect rules list and index from concurrent modification
         # (e.g. hot-reload set_rules while handle_device_update is iterating).
         self._lock = asyncio.Lock()
@@ -327,6 +340,21 @@ class RuleEngine:
                 continue
             self._event_rules_by_type[rule.device_type].append(rule)
 
+    def _base_device_types(self, cls: type) -> Tuple[str, ...]:
+        """Return the non-empty ``device_type()`` of each base in ``cls.__mro__``, cached."""
+        cached = self._base_types_cache.get(cls)
+        if cached is None:
+            types: List[str] = []
+            for base in cls.__mro__:
+                if base is cls:
+                    continue
+                base_type = getattr(base, "device_type", lambda: None)()
+                if base_type:
+                    types.append(base_type)
+            cached = tuple(types)
+            self._base_types_cache[cls] = cached
+        return cached
+
     async def handle_device_update(self, device_id: str, snapshot: dict):
         """
         Trigger all matching event-based rules for a device update.
@@ -356,12 +384,8 @@ class RuleEngine:
             if device_type:
                 candidates.extend(self._event_rules_by_type.get(device_type, []))
                 if device_instance:
-                    for base in type(device_instance).__mro__:
-                        if base is type(device_instance):
-                            continue
-                        base_type = getattr(base, "device_type", lambda: None)()
-                        if base_type:
-                            candidates.extend(self._event_rules_by_type.get(base_type, []))
+                    for base_type in self._base_device_types(type(device_instance)):
+                        candidates.extend(self._event_rules_by_type.get(base_type, []))
 
             seen = set()
             scheduled: List[Tuple[Rule, Coroutine[Any, Any, Any]]] = []

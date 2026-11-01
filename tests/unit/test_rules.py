@@ -413,3 +413,43 @@ async def test_rule_interval_must_be_positive():
         Rule(_r, interval=-1.5)
     with pytest.raises(TypeError):
         Rule(_r, interval="5s")
+
+
+@pytest.mark.asyncio
+async def test_rule_signature_and_mro_are_computed_once(monkeypatch):
+    import kamio.core.rules as rules_mod
+
+    class BaseSensor(Device):
+        level: int = state(default=0, writable=True)
+
+    class LeafSensor(BaseSensor):
+        pass
+
+    app = KamioApp()
+    calls = []
+
+    @app.rule(fields=["level"])
+    async def global_rule(event: RuleEvent, app: KamioApp):
+        calls.append("global")
+
+    @app.rule(device=BaseSensor, fields=["level"])
+    async def base_rule(event: RuleEvent):
+        calls.append("base")
+
+    sig_calls = []
+    real_signature = rules_mod.inspect.signature
+
+    def counting_signature(func):
+        sig_calls.append(func)
+        return real_signature(func)
+
+    monkeypatch.setattr(rules_mod.inspect, "signature", counting_signature)
+
+    device = await app.add_device("s1", LeafSensor)
+    for value in range(1, 4):
+        await device.handle_state({"level": value})
+
+    assert calls.count("global") == 3
+    assert calls.count("base") == 3
+    assert len(sig_calls) == 2
+    assert app.rules._base_types_cache[LeafSensor] == ("basesensor", "device")
