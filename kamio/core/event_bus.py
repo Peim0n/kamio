@@ -59,6 +59,10 @@ class EventBus(AsyncPriorityDispatcher):
         """Return all callbacks subscribed to event_type, in priority order."""
         return [cb for cb, _ in self._list(event_type)]
 
+    def has_subscribers(self, event_type: str) -> bool:
+        """Return whether event_type has at least one subscriber (lock-free)."""
+        return self._has(event_type)
+
     def event_types(self) -> List[str]:
         """Return all event types that have at least one subscriber."""
         return self._event_types()
@@ -75,6 +79,8 @@ class EventBus(AsyncPriorityDispatcher):
         set to ``None``).  Applies per-subscriber filter before calling.
         Errors in callbacks are caught, logged, and do not stop others.
         """
+        if not self._has(event_type):
+            return
         if not data.get("timestamp"):
             data = {"timestamp": _now(), **data}
         await self._dispatch(event_type, data)

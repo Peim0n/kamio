@@ -330,6 +330,10 @@ class CustomNodeManager:
         """Return a registered node by name, or None."""
         return self._nodes.get(name)
 
+    def has_nodes(self) -> bool:
+        """Return whether any custom node is registered."""
+        return bool(self._nodes)
+
     def list_nodes(self) -> List[str]:
         """Return names of all registered nodes."""
         return list(self._nodes.keys())
