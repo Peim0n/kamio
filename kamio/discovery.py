@@ -36,6 +36,7 @@ class HADiscovery:
 
         device_id = device.node.device_id
         device_type = device.device_type()
+        availability_topic = self._availability_topic(device_id)
 
         # This is a simplified version. Real HA discovery requires mapping
         # Kamio fields to HA entities (sensor, binary_sensor, switch, etc.)
@@ -50,7 +51,12 @@ class HADiscovery:
                 "state_topic": f"Kamio/v1/{device_id}/ds",
                 "value_template": f"{{{{ value_json.data.{name} }}}}",
                 "unique_id": f"{device_id}_{name}",
-                "availability_topic": f"Kamio/v1/{device_id}/k",
+                # HA expects plain "online"/"offline" payloads on the
+                # availability topic — the keepalive topic carries Envelope
+                # JSON and would leave every entity "unavailable" forever.
+                "availability_topic": availability_topic,
+                "payload_available": "online",
+                "payload_not_available": "offline",
                 "device": {
                     "identifiers": [device_id],
                     "name": device_id,
@@ -94,6 +100,13 @@ class HADiscovery:
             except Exception as e:
                 logger.warning(f"Failed to announce {name} to HA at {topic}: {e}")
 
+        # Mark the device available — retained so HA sees the device online
+        # even when it restarted before this announcement.
+        try:
+            await device.node.publish_raw(availability_topic, b"online", retain=True)
+        except Exception as e:
+            logger.warning(f"Failed to publish availability for {device_id}: {e}")
+
     async def clear(self, device: "Device") -> None:
         """Remove HA discovery entries for a device (publish empty retained payload).
 
@@ -113,6 +126,19 @@ class HADiscovery:
                 logger.info(f"Cleared HA discovery for {name} at {topic}")
             except Exception as e:
                 logger.warning(f"Failed to clear HA discovery for {name}: {e}")
+
+        # Mark the device offline — retained so HA does not resurrect a
+        # stale "online" marker if the device is re-added later.
+        try:
+            await device.node.publish_raw(
+                self._availability_topic(device_id), b"offline", retain=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to publish offline availability for {device_id}: {e}")
+
+    def _availability_topic(self, device_id: str) -> str:
+        """Dedicated availability topic holding a retained online/offline payload."""
+        return f"Kamio/v1/{device_id}/availability"
 
     def _map_to_ha_component(self, field) -> str:
         """Map a Kamio field to a Home Assistant component type (sensor, switch, etc.)."""

@@ -397,3 +397,27 @@ def test_parse_freq_float():
 
 def test_parse_freq_int():
     assert parse_freq(42) == 42.0
+
+
+def test_tls_conflicting_config_raises_clear_error():
+    """check_hostname=True + CERT_NONE must fail fast with a readable error."""
+    import ssl
+
+    import pytest as _pytest
+
+    from kamio.core.mqtt_connection import MqttConnection
+
+    with _pytest.raises(ValueError, match="check_hostname"):
+        MqttConnection(
+            broker_uri="mqtt://x",
+            tls={"cert_reqs": "NONE", "check_hostname": True},
+        )
+
+
+def test_config_bare_kamio_env_ignored(monkeypatch):
+    """A bare ``Kamio_`` env var must not inject an empty-string config key."""
+    from kamio.config import Config
+
+    monkeypatch.setenv("Kamio_", "junk")
+    cfg = Config()
+    assert cfg._extra.get("") is None

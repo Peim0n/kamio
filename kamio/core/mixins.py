@@ -123,6 +123,10 @@ class TelemetryMixin(TaskManagerMixin):
         while self.node and self.node.is_running:
             try:
                 await asyncio.sleep(freq)
+                # Re-check after the sleep — the node may have stopped while
+                # we were waiting, and publishing on a stopped node is noise.
+                if not self.node or not self.node.is_running:
+                    break
                 data = await self.handle_telemetry_update(field_names)
                 if data and isinstance(data, dict):
                     self.logger.debug(

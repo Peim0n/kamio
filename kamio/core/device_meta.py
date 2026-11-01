@@ -54,6 +54,11 @@ def _resolve_field_hints(cls: type, field_names: set) -> Dict[str, Any]:
     Raises:
         TypeError: if a declared field annotation cannot be resolved — a raw
             string must never end up in ``Field.python_type`` silently.
+
+    Security note: annotation resolution uses ``eval`` (as does
+    ``typing.get_type_hints``), so arbitrary expressions inside field
+    annotations are executed at class-definition time. Device classes are
+    trusted, local application code — never build them from untrusted input.
     """
     resolved: Dict[str, Any] = {}
     errors: list = []

@@ -186,6 +186,10 @@ class Config:
                 continue
             # Strip the prefix by length (case-insensitive match already done).
             relative = env_key[len(prefix) :]
+            if not relative:
+                # A bare ``Kamio_`` env var has no key part — skip it rather
+                # than storing an empty-string config key.
+                continue
             if "__" in relative:
                 # Nested key: Kamio_MQTT__TLS__CAFILE -> mqtt.tls.cafile
                 dotted = relative.replace("__", ".").lower()

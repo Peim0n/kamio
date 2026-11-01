@@ -542,3 +542,33 @@ def test_logging_plugin_logs_filtered_payload_when_enabled(caplog):
         plugin._log_event({"device": object(), "value": 1})
 
     assert any(r.getMessage() == "event received: {'value': 1}" for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_ha_discovery_publishes_availability(mock_mqtt):
+    """Announce publishes retained 'online' on a dedicated availability topic;
+    clear() publishes 'offline' — HA must never read Envelope keepalives."""
+    import json as _json
+
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="ha-avail")
+
+    class Lamp(Device):
+        power: bool = state(default=False, writable=True)
+
+    device = await app.add_device("lamp1", Lamp)
+    app.enable_ha_discovery()
+    await app.ha_discovery.announce(device)
+
+    topics = {t: p for t, p, _, _ in mock_mqtt.published}
+    avail = "Kamio/v1/lamp1/availability"
+    assert topics.get(avail) == b"online"
+    cfg_topic = "homeassistant/switch/lamp1/power/config"
+    cfg = _json.loads(topics[cfg_topic].decode())
+    assert cfg["availability_topic"] == avail
+    assert cfg["payload_available"] == "online"
+    assert cfg["payload_not_available"] == "offline"
+
+    await app.ha_discovery.clear(device)
+    topics = {t: p for t, p, _, _ in mock_mqtt.published}
+    assert topics.get(avail) == b"offline"

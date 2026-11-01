@@ -158,6 +158,12 @@ class MqttConnection:
         effective_reqs = cert_reqs if cert_reqs is not None else ssl.CERT_REQUIRED
 
         check_hostname = tls.get("check_hostname")
+        if effective_reqs == ssl.CERT_NONE and check_hostname:
+            raise ValueError(
+                "TLS configuration conflict: check_hostname=True is incompatible "
+                "with cert_reqs=CERT_NONE (hostname verification requires a "
+                "verified certificate). Drop check_hostname or require a cert."
+            )
         effective_check = (
             bool(check_hostname) if check_hostname is not None else effective_reqs != ssl.CERT_NONE
         )

@@ -114,18 +114,29 @@ class _UDPProtocol(asyncio.DatagramProtocol):
     bytes that silently masks a failure.
     """
 
+    #: Upper bound for the receive queue — a datagram flood must not grow
+    #: memory without limit; oldest items are dropped when it fills.
+    _QUEUE_LIMIT = 256
+
     def __init__(self) -> None:
-        self._buffer: asyncio.Queue = asyncio.Queue()
+        self._buffer: asyncio.Queue = asyncio.Queue(maxsize=self._QUEUE_LIMIT)
+
+    def _enqueue(self, item) -> None:
+        try:
+            self._buffer.put_nowait(item)
+        except asyncio.QueueFull:
+            self._buffer.get_nowait()  # drop oldest
+            self._buffer.put_nowait(item)
 
     def datagram_received(self, data: bytes, addr: tuple) -> None:
-        self._buffer.put_nowait(data)
+        self._enqueue(data)
 
     def error_received(self, exc: Exception) -> None:
         import logging
 
         logging.getLogger("Kamio.drivers.udp").warning(f"UDP protocol error: {exc}")
         # Put the exception in the queue so recv() callers see it.
-        self._buffer.put_nowait(exc)
+        self._enqueue(exc)
 
     async def recv(self, max_bytes: int) -> bytes:
         data = await self._buffer.get()

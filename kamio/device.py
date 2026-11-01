@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import OrderedDict
 from typing import (
@@ -634,6 +635,15 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
         }
 
     @staticmethod
+    def _jsonable(value: Any) -> Any:
+        """Return ``value`` if it is JSON-serialisable, else its repr()."""
+        try:
+            json.dumps(value)
+            return value
+        except (TypeError, ValueError):
+            return repr(value)
+
+    @staticmethod
     def _field_type_name(field: Field) -> str:
         """Return a human-readable type name for a Field's python_type."""
         python_type = field.python_type
@@ -658,7 +668,7 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
                 n: {
                     "kind": f.kind,
                     "type": cls._field_type_name(f),
-                    "default": f.default,
+                    "default": cls._jsonable(f.default),
                     "writable": f.writable,
                     "freq": f.freq,
                     "unit": getattr(f, "unit", None),

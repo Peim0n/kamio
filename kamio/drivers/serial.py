@@ -47,6 +47,10 @@ class SerialDriver(BaseDriver):
     avoid unbounded memory growth when a device streams without a newline.
     All operations are guarded by an :class:`asyncio.Lock` to prevent
     concurrent write/read interleaving on the same serial port.
+
+    Note: a blocking call already running in the worker thread cannot be
+    cancelled — task cancellation only detaches the awaiting coroutine;
+    the thread finishes on its own. Set short serial timeouts accordingly.
     """
 
     #: Maximum number of bytes a single readline-style read may accumulate.

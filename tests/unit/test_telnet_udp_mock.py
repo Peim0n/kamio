@@ -664,3 +664,16 @@ class TestMockDriver:
         async with drv as d:
             assert d.connected is True
         assert drv.connected is False
+
+
+@pytest.mark.asyncio
+async def test_udp_queue_is_bounded():
+    """A datagram flood must not grow the receive queue without limit."""
+    from kamio.drivers.udp import _UDPProtocol
+
+    proto = _UDPProtocol()
+    for i in range(1000):
+        proto.datagram_received(bytes([i % 256]), ("127.0.0.1", 1))
+    assert proto._buffer.qsize() <= proto._QUEUE_LIMIT
+    # Newest datagrams are kept (oldest dropped).
+    assert await proto.recv(1024) == bytes([(1000 - proto._QUEUE_LIMIT) % 256])
