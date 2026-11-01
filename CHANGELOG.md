@@ -2,6 +2,12 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.0b12] - 2026-11-01
+
+### Added
+- **`app.apply_manifest()`** — apply a `get_manifest()` snapshot (or agent-authored JSON): creates devices from embedded schemas via `make_device_class`, applies state/config, registers DSL rules; per-entry failures collected into the report, never raised.
+- **`KamioTools` (`kamio/mcp_server.py`)** — MCP-style tool surface: `list_tools()` schema + `call_tool()` dispatcher (`create_device`, `set_state`, `call_command`, `add_condition_rule`, `apply_manifest`, `audit_log`, etc.). Results are `{"ok": ..., "result"/"error": ...}` dicts — ready for a thin stdio/SSE MCP transport shim.
+
 ## [1.0.0b11] - 2026-11-01
 
 ### Added — agent-facing API layer

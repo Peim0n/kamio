@@ -19,9 +19,10 @@ from .errors import (
     PolicyError,
     ValidationError,
 )
+from .mcp_server import KamioTools
 from .plugins.base import Plugin
 
-__version__ = "1.0.0b11"
+__version__ = "1.0.0b12"
 __all__ = [
     "KamioApp",
     "Device",
@@ -48,4 +49,5 @@ __all__ = [
     "DriverNotAllowedError",
     "PolicyError",
     "KamioTimeoutError",
+    "KamioTools",
 ]

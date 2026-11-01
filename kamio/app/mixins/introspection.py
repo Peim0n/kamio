@@ -79,6 +79,86 @@ class IntrospectionMixin:
             "recent_actions": [a["action"] for a in list(self.audit_log)[-10:]],
         }
 
+    async def apply_manifest(self: Any, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply a manifest produced by :meth:`get_manifest` (or authored by an agent).
+
+        Creates missing devices from their embedded schema, updates
+        state/config on all devices, and registers DSL rules
+        (``rules[].dsl``). Python-function rules cannot be reconstructed
+        from JSON and are reported as skipped. Never raises for a single
+        bad entry — errors are collected into the report.
+        """
+        from kamio.data_fields import config as cfg_field
+        from kamio.data_fields import event as evt_field
+        from kamio.data_fields import state as st_field
+        from kamio.data_fields import telemetry as tl_field
+        from kamio.dsl import make_device_class, when
+
+        report: Dict[str, Any] = {
+            "devices": {"created": [], "updated": [], "skipped": []},
+            "rules": {"created": [], "skipped": []},
+            "errors": [],
+        }
+        _factories = {
+            "state": st_field,
+            "telemetry": tl_field,
+            "config": cfg_field,
+            "event": evt_field,
+        }
+        for dspec in manifest.get("devices", []):
+            did = dspec.get("id")
+            try:
+                if not isinstance(did, str) or not did:
+                    raise ValueError(f"invalid device id {did!r}")
+                existing = self.registry.get_instance(did)
+                if existing is None:
+                    fields_spec = {}
+                    for fname, fspec in dspec.get("schema", {}).get("fields", {}).items():
+                        factory = _factories.get(fspec.get("kind"))
+                        if factory is None:
+                            continue
+                        fields_spec[fname] = factory(
+                            default=fspec.get("default"),
+                            description=fspec.get("description") or "",
+                            **{
+                                k: v
+                                for k, v in fspec.items()
+                                if k in ("writable", "unit", "min_value", "max_value", "choices")
+                                and v is not None
+                            },
+                        )
+                    cls = make_device_class(dspec.get("type", "device"), fields_spec)
+                    await self.add_device(did, cls)
+                    report["devices"]["created"].append(did)
+                    existing = self.registry.get_instance(did)
+                else:
+                    report["devices"]["updated"].append(did)
+                if existing is not None:
+                    if dspec.get("state"):
+                        await existing.handle_state(dspec["state"])
+                    if dspec.get("config"):
+                        await existing.handle_config(dspec["config"])
+            except Exception as e:
+                report["errors"].append(f"device {did!r}: {e}")
+        for rspec in manifest.get("rules", []):
+            try:
+                dsl = rspec.get("dsl")
+                if not dsl:
+                    report["rules"]["skipped"].append(rspec.get("name"))
+                    continue
+                w, t = dsl["when"], dsl["then"]
+                dtype = self.registry.get_class(w["device"].lower())
+                if dtype is None:
+                    raise ValueError(f"device type {w['device']!r} not registered")
+                when(dtype, w["field"], w["op"], w["value"]).then_set(
+                    self, t["device_id"], t["field"], t["value"]
+                )
+                report["rules"]["created"].append(rspec.get("name"))
+            except Exception as e:
+                report["errors"].append(f"rule {rspec.get('name')!r}: {e}")
+        self._audit("apply_manifest", **{k: len(v) for k, v in report["devices"].items()})
+        return report
+
     def pause_automation(self: Any) -> int:
         """Disable every rule; returns how many were paused."""
         paused = 0

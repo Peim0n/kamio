@@ -128,3 +128,134 @@ def test_errors_are_kamio_and_builtin():
 
     assert issubclass(ValidationError, ValueError)
     assert issubclass(DeviceNotFoundError, KamioError)
+
+
+@pytest.mark.asyncio
+async def test_apply_manifest_roundtrip(mock_mqtt):
+    mock_mqtt.simulate_connect()
+    src = KamioApp(mqtt_broker=mock_mqtt)
+    Sens = make_device_class("sens", {"temp": telemetry(default=0.0)})
+    await src.add_device("s1", Sens)
+    await src.add_device("fan1", Lamp)
+    when(Sens, "temp", ">", 28).then_set(src, "fan1", "power", True)
+    m = src.get_manifest()
+
+    dst = KamioApp(mqtt_broker=mock_mqtt)
+    rep = await dst.apply_manifest(m)
+    assert set(rep["devices"]["created"]) == {"s1", "fan1"}
+    assert rep["rules"]["created"]
+    assert dst.registry.get_instance("s1").device_type() == "sens"
+
+    # Idempotent-ish: second apply updates instead of recreating.
+    rep2 = await dst.apply_manifest(m)
+    assert set(rep2["devices"]["updated"]) == {"s1", "fan1"}
+    # Bad entries collect errors, never raise.
+    bad = await dst.apply_manifest({"devices": [{"id": 0}], "rules": [{"name": "x"}]})
+    assert bad["errors"] and "x" in bad["rules"]["skipped"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_end_to_end(mock_mqtt):
+    from kamio import KamioTools
+
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt)
+    tools = KamioTools(app)
+    assert len(tools.list_tools()) >= 12
+
+    r = await tools.call_tool(
+        "create_device",
+        {
+            "device_id": "t1",
+            "type": "thing",
+            "fields": {"power": {"kind": "state", "default": False, "writable": True}},
+        },
+    )
+    assert r["ok"] and (await tools.call_tool("list_devices", {}))["result"] == {"t1": "thing"}
+
+    r = await tools.call_tool("set_state", {"device_id": "t1", "state": {"power": True}})
+    assert r["ok"] and app.registry.get_instance("t1").power is True
+
+    r = await tools.call_tool(
+        "call_command", {"device_id": "t1", "method": "set_power", "params": {"value": False}}
+    )
+    assert r["ok"]
+    assert (await tools.call_tool("get_device_state", {"device_id": "t1"}))["result"][
+        "power"
+    ] is False
+
+    assert (
+        await tools.call_tool(
+            "add_condition_rule",
+            {
+                "device_type": "thing",
+                "field": "power",
+                "op": "==",
+                "value": True,
+                "target_id": "t1",
+                "target_field": "power",
+                "target_value": False,
+            },
+        )
+    )["ok"]
+    assert (await tools.call_tool("pause_automation", {}))["result"] >= 1
+    assert (await tools.call_tool("resume_automation", {}))["result"] >= 1
+    assert (await tools.call_tool("remove_rule", {"rule_name": "when_power==True_set_t1.power"}))[
+        "ok"
+    ]
+    assert (await tools.call_tool("apply_manifest", {"manifest": {}}))["ok"]
+    assert (await tools.call_tool("audit_log", {"limit": 3}))["result"]
+    assert (await tools.call_tool("describe", {}))["ok"]
+    assert (await tools.call_tool("get_manifest", {}))["ok"]
+    assert (await tools.call_tool("remove_device", {"device_id": "t1"}))["ok"]
+
+    # Errors are reported, not raised.
+    assert (await tools.call_tool("nope", {}))["ok"] is False
+    assert (await tools.call_tool("get_device_state", {"device_id": "ghost"}))["ok"] is False
+    assert (await tools.call_tool("remove_rule", {"rule_name": "ghost"}))["ok"] is False
+    assert (
+        await tools.call_tool(
+            "add_condition_rule",
+            {
+                "device_type": "ghost",
+                "field": "x",
+                "op": ">",
+                "value": 1,
+                "target_id": "t",
+                "target_field": "f",
+                "target_value": 1,
+            },
+        )
+    )["ok"] is False
+
+
+def test_errors_validation_attrs_and_dsl_spec_errors():
+    from kamio import ValidationError
+    e = ValidationError("bad", field="power", value="x")
+    assert e.field == "power" and e.value == "x" and isinstance(e, ValueError)
+    # make_device_class rejects non-Field specs and non-Device classes.
+    with pytest.raises(TypeError):
+        make_device_class("ok_name", {"f": "not a field"})
+    with pytest.raises(TypeError):
+        when("notaclass", "f", ">", 1)
+
+
+@pytest.mark.asyncio
+async def test_apply_manifest_updates_state_and_errors(mock_mqtt):
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt)
+    # Manifest updating an EXISTING device's state/config, plus a rule
+    # whose device type is unknown -> error collected, not raised.
+    Lamp2 = make_device_class("l2", {"power": state(default=False, writable=True)})
+    await app.add_device("d1", Lamp2)
+    rep = await app.apply_manifest({
+        "devices": [{"id": "d1", "type": "l2",
+                     "schema": {"fields": {"power": {"kind": "state", "writable": True}}},
+                     "state": {"power": True}}],
+        "rules": [{"name": "n1", "dsl": {"when": {"device": "Ghost", "field": "x",
+                                                 "op": ">", "value": 1},
+                                          "then": {"device_id": "d1", "field": "power",
+                                                   "value": False}}}],
+    })
+    assert app.registry.get_instance("d1").power is True
+    assert rep["errors"] and "Ghost" in rep["errors"][0]
