@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from types import MappingProxyType
 from typing import Any, Callable, Coroutine, Dict, Optional
 
 from .correlation import BaseCorrelationManager
@@ -38,7 +39,7 @@ class StateManager(BaseCorrelationManager):
         self._states: Dict[str, Dict[str, Any]] = {}
         self._state_lock = threading.RLock()
         self._version = 0
-        self._snapshot: Optional[Dict[str, Dict[str, Any]]] = None
+        self._snapshot: Optional[MappingProxyType] = None
         self._snapshot_version = -1
 
     def get_state(self, device_id: str, field: Optional[str] = None) -> Any:
@@ -61,16 +62,19 @@ class StateManager(BaseCorrelationManager):
         with self._state_lock:
             return {k: v.copy() for k, v in self._states.items()}
 
-    def get_states_snapshot(self) -> Dict[str, Dict[str, Any]]:
+    def get_states_snapshot(self) -> MappingProxyType:
         """Return a copy of all device states shared until the next state update.
 
         Unlike :meth:`get_all_states`, repeated calls between updates return
-        the *same* object, so callers must treat it as read-only.  The
+        the *same* object — wrapped read-only at both levels, so a mutating
+        caller fails loudly instead of corrupting the shared snapshot.  The
         snapshot never aliases the live state table.
         """
         with self._state_lock:
             if self._snapshot is None or self._snapshot_version != self._version:
-                self._snapshot = {k: v.copy() for k, v in self._states.items()}
+                self._snapshot = MappingProxyType(
+                    {k: MappingProxyType(v.copy()) for k, v in self._states.items()}
+                )
                 self._snapshot_version = self._version
             return self._snapshot
 

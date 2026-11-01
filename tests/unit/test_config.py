@@ -28,7 +28,7 @@ def sample_config(tmp_path):
 def test_config_reads_json_file(sample_config):
     config = Config(config_path=str(sample_config))
     assert config.get("mqtt_broker") == "mqtt://broker.local:1883"
-    assert config.get("log_level") == "INFO"
+    assert config.get("log_level") == logging.INFO
 
 
 def test_config_environment_variable_overrides_file(monkeypatch, sample_config):

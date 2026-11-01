@@ -339,27 +339,6 @@ def test_ha_discovery_map_with_default_type():
 # ---------------------------------------------------------------------------
 # data_fields additional coverage
 # ---------------------------------------------------------------------------
-def test_field_set_name():
-    f = Field(name="", kind="state", default=0)
-
-    class Owner:
-        x = f
-
-    assert f.name == "x"
-
-
-def test_field_get_from_instance():
-    f = Field(name="x", kind="state", default=42)
-
-    class Owner:
-        x = f
-
-    obj = Owner()
-    assert f.__get__(obj) == 42
-    # Accessing from class returns the Field itself
-    assert f.__get__(None) is f
-
-
 def test_telemetry_factory():
     f = telemetry(default=21.0, unit="C", description="Temperature")
     assert f.kind == "telemetry"

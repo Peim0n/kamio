@@ -15,7 +15,7 @@ class Settings:
     """Typed, validated settings for Kamio Core."""
 
     mqtt_broker: str = "mqtt://localhost:1883"
-    log_level: str = "INFO"
+    log_level: int = logging.INFO
 
 
 class Config:
@@ -98,8 +98,7 @@ class Config:
     @property
     def log_level(self) -> int:
         """Logging level as a Python logging constant."""
-        level_str = self._settings.log_level.upper()
-        return getattr(logging, level_str, logging.INFO)
+        return self._settings.log_level
 
     def get(
         self,
@@ -209,13 +208,21 @@ class Config:
             )
             broker = Settings.mqtt_broker
 
-        level = str(kwargs.get("log_level", Settings.log_level)).upper()
-        if level not in _LOG_LEVEL_NAMES:
-            self.logger.warning(f"Invalid log_level '{level}'; falling back to INFO")
-            level = "INFO"
+        raw_level = kwargs.get("log_level", Settings.log_level)
+        if isinstance(raw_level, int):
+            level_int = raw_level
+        else:
+            level_name = str(raw_level).upper()
+            if level_name not in _LOG_LEVEL_NAMES:
+                self.logger.warning(f"Invalid log_level '{level_name}'; falling back to INFO")
+                level_name = "INFO"
+            level_int = getattr(logging, level_name)
 
-        return Settings(mqtt_broker=broker, log_level=level)
+        return Settings(mqtt_broker=broker, log_level=level_int)
 
     def __repr__(self) -> str:
         """Return a developer-friendly representation of the config."""
-        return f"<Config broker={self.mqtt_broker!r} log_level={self._settings.log_level!r}>"
+        return (
+            f"<Config broker={self.mqtt_broker!r} "
+            f"log_level={logging.getLevelName(self._settings.log_level)!r}>"
+        )

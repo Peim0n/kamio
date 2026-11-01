@@ -2,6 +2,24 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.0b10] - 2026-11-01
+
+### Changed
+- **`Config.get("log_level")` now returns `int`** — `Settings.log_level` is stored as a Python logging constant, so both accessors (`get()` and `.log_level`) return the same typed value. String names ("INFO", "DEBUG", …) from config/env are still accepted and converted.
+- **`StateManager.get_states_snapshot()` is now read-only** — the shared snapshot is wrapped in `MappingProxyType` at both levels; mutating `event.data` inside a rule now raises `TypeError` instead of silently corrupting the snapshot other rules see.
+
+### Fixed
+- **HA Discovery availability** — entities now point at a dedicated `Kamio/v1/{id}/availability` topic with retained `online`/`offline` payloads instead of the keepalive topic (whose Envelope JSON left every entity `unavailable`).
+- **Telemetry post-stop publish** — the scheduler re-checks `node.is_running` after each sleep, so no extra publish escapes during shutdown.
+- **TLS config validation** — `check_hostname=True` combined with `cert_reqs=CERT_NONE` now raises a clear `ValueError` at configuration time.
+- **Bare `Kamio_` env var** — an env var equal to the prefix alone no longer injects an empty-string config key.
+- **UDP receive queue** — bounded at 256 datagrams (oldest dropped), preventing memory growth under a datagram flood.
+- **`get_schema()` JSON-safety** — non-JSON-serializable field defaults are emitted as `repr()` so the schema stays serializable as documented.
+- **`route_message` race** — iterating a snapshot of the node registry fixes a `RuntimeError` when a node unregisters mid-route.
+
+### Removed
+- **`Field.__get__`/`__set_name__`** — dead descriptor code; the metaclass removes `Field` objects from the class namespace, so the descriptor protocol never engaged.
+
 ## [1.0.0b8] - 2026-11-01
 
 ### Documentation

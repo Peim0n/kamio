@@ -1216,7 +1216,7 @@ def mqtt_broker(self) -> str:
 
 @property
 def log_level(self) -> int:
-    """Returns the logging level."""
+    """Returns the logging level as a Python logging constant (int)."""
 
 @property
 def settings(self) -> Settings:
@@ -1294,6 +1294,12 @@ async def announce(self, device: 'Device'):
     - state (str, writable=True) -> text
     - state (other types, writable=False) -> sensor
 
+    Availability: every entity points at the dedicated
+    ``Kamio/v1/{device_id}/availability`` topic. announce() publishes a
+    retained ``online`` payload there; clear() publishes retained
+    ``offline``. This is separate from the keepalive topic, which carries
+    Envelope JSON and must not be used as an availability source.
+
     Parameters:
         device: Device instance to announce
 
@@ -1307,7 +1313,9 @@ async def clear(self, device: 'Device') -> None:
     Removes a device's discovery entries from Home Assistant.
 
     Publishes an empty retained payload to each of the device's config topics
-    so HA removes the entity. Call when removing a device from the application.
+    so HA removes the entity, and a retained ``offline`` payload to the
+    device's availability topic. Call when removing a device from the
+    application.
 
     Parameters:
         device: Device instance to clear
@@ -1533,6 +1541,17 @@ class StateManager:
     
     def update_state(self, device_id: str, data: Dict[str, Any]) -> None:
         """Updates device state (including from telemetry)."""
+    
+    def get_all_states(self) -> Dict[str, Dict[str, Any]]:
+        """Returns a fresh shallow copy of all device states."""
+    
+    def get_states_snapshot(self) -> MappingProxyType:
+        """Returns a shared, read-only snapshot of all device states.
+
+        Rebuilt lazily after each update_state(); calls between updates
+        return the same MappingProxyType-wrapped object (outer and inner
+        maps). Used by interval rules — mutating it raises TypeError.
+        """
     
     async def handle_incoming(self, envelope: Envelope):
         """Handles incoming state messages."""

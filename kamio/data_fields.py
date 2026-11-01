@@ -52,16 +52,6 @@ class Field:
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __set_name__(self, owner, name):
-        """Set the field name automatically when the descriptor is assigned to a class attribute."""
-        object.__setattr__(self, "name", name)
-
-    def __get__(self, obj, objtype=None):
-        """Return the field value from the instance, or the Field itself when accessed on the class."""
-        if obj is None:
-            return self
-        return obj.__dict__.get(self.name, self.default)
-
 
 def telemetry(
     default: Any = None,
