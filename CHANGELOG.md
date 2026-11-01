@@ -2,6 +2,12 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.1b1] - 2026-11-01
+
+### Added
+- `examples/31_agent_api.py` — runnable walkthrough of the agent-facing API (manifest round-trip, DSL rules, guardrails, KamioTools).
+- `docs/api.md` — "Agent-facing API" section: errors hierarchy, guardrails, introspection, DSL, KamioTools reference.
+
 ## [1.0.0b12] - 2026-11-01
 
 ### Added

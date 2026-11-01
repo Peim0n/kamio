@@ -22,7 +22,7 @@ from .errors import (
 from .mcp_server import KamioTools
 from .plugins.base import Plugin
 
-__version__ = "1.0.0b12"
+__version__ = "1.0.1b1"
 __all__ = [
     "KamioApp",
     "Device",

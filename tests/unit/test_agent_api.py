@@ -231,6 +231,7 @@ async def test_mcp_tools_end_to_end(mock_mqtt):
 
 def test_errors_validation_attrs_and_dsl_spec_errors():
     from kamio import ValidationError
+
     e = ValidationError("bad", field="power", value="x")
     assert e.field == "power" and e.value == "x" and isinstance(e, ValueError)
     # make_device_class rejects non-Field specs and non-Device classes.
@@ -248,14 +249,26 @@ async def test_apply_manifest_updates_state_and_errors(mock_mqtt):
     # whose device type is unknown -> error collected, not raised.
     Lamp2 = make_device_class("l2", {"power": state(default=False, writable=True)})
     await app.add_device("d1", Lamp2)
-    rep = await app.apply_manifest({
-        "devices": [{"id": "d1", "type": "l2",
-                     "schema": {"fields": {"power": {"kind": "state", "writable": True}}},
-                     "state": {"power": True}}],
-        "rules": [{"name": "n1", "dsl": {"when": {"device": "Ghost", "field": "x",
-                                                 "op": ">", "value": 1},
-                                          "then": {"device_id": "d1", "field": "power",
-                                                   "value": False}}}],
-    })
+    rep = await app.apply_manifest(
+        {
+            "devices": [
+                {
+                    "id": "d1",
+                    "type": "l2",
+                    "schema": {"fields": {"power": {"kind": "state", "writable": True}}},
+                    "state": {"power": True},
+                }
+            ],
+            "rules": [
+                {
+                    "name": "n1",
+                    "dsl": {
+                        "when": {"device": "Ghost", "field": "x", "op": ">", "value": 1},
+                        "then": {"device_id": "d1", "field": "power", "value": False},
+                    },
+                }
+            ],
+        }
+    )
     assert app.registry.get_instance("d1").power is True
     assert rep["errors"] and "Ghost" in rep["errors"][0]

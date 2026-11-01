@@ -1864,3 +1864,49 @@ def __init__(self, app: KamioApp, poll_interval: float = 1.0, debounce: float = 
 ```python
 async def publish_async(self, topic: str, payload: Any, qos: int = 0, retain: bool = False) -> None: ...
 ```
+
+## Agent-facing API
+
+Typed, explicit surface for programmatic agents (LLMs, controllers).
+
+### Errors — `kamio.errors`
+`KamioError` base + `ValidationError` (with `field`/`value` attrs), `DeviceNotFoundError`,
+`CommandNotFoundError`, `DriverNotAllowedError`, `PolicyError`, `KamioTimeoutError`.
+Each also inherits the builtin it replaces (`ValueError`, `AttributeError`, `RuntimeError`, `TimeoutError`).
+
+### Guardrails — `KamioApp` params
+```python
+KamioApp(allowed_drivers=["MockHardwareDriver"],   # class-name allowlist; else DriverNotAllowedError
+         denied_commands=["reboot"],               # refused before execution
+         max_devices=100,                          # PolicyError past the cap
+         dry_run=True)                             # validate only, return {"dry_run": True, ...}
+app.pause_automation()   # disable all rules; returns count
+app.resume_automation()  # re-enable all rules; returns count
+```
+
+### Introspection
+```python
+manifest = app.get_manifest()   # JSON-safe full snapshot: devices+schema+state,
+                              # rules (+dsl specs), plugins, custom_nodes, policies
+report   = await app.apply_manifest(manifest)  # create/apply; errors collected, not raised
+summary  = app.describe()       # compact human/agent-readable overview
+app.audit_log                   # ring buffer (200) of mutating actions
+```
+
+### DSL — `kamio.dsl`
+```python
+Sens = make_device_class("sens", {"temp": telemetry(default=0.0)})
+when(Sens, "temp", ">", 28).then_set(app, "fan1", "power", True)
+# ops: >, <, >=, <=, ==, != ; spec stored on rule._kamio_dsl -> manifest
+```
+
+### KamioTools — MCP-style dispatcher
+```python
+tools = KamioTools(app)
+tools.list_tools()                                # 14 tools with arg schema
+await tools.call_tool("set_state", {"device_id": "d1", "state": {"power": True}})
+# -> {"ok": True, "result": ...} or {"ok": False, "error": "..."}
+```
+Tools: get_manifest, describe, list_devices, get_device_state, create_device,
+remove_device, set_state, call_command, add_condition_rule, remove_rule,
+pause_automation, resume_automation, apply_manifest, audit_log.

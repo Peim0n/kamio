@@ -65,6 +65,7 @@ mosquitto
 | 28 | `28_custom_node_gotchas.py` | Подводные камни CustomNode и CustomNodeManager | Продвинутый |
 | 29 | `29_testing_patterns.py` | Паттерны тестирования устройств, правил, плагинов | Продвинутый |
 | 30 | `30_production_checklist.py` | Production-чеклист перед запуском в эксплуатацию | Продвинутый |
+| 31 | `31_agent_api.py` | Agent-facing API: manifest, DSL, guardrails, MCP-tools | Продвинутый |
 
 ## Рекомендуемый порядок изучения
 
