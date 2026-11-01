@@ -554,6 +554,11 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
                 continue
             validated[key] = self._validate_value(field, value)
 
+        if getattr(getattr(self, "_app", None), "dry_run", False) is True:
+            # Dry-run: validate and report what would change without
+            # touching the driver or the stored state.
+            return {"dry_run": True, "would_apply": validated}
+
         for key, valid_value in validated.items():
             if self.driver:
                 try:
@@ -845,6 +850,12 @@ class Device(TelemetryMixin, metaclass=DeviceMeta):
             except Exception as e:
                 self.logger.error(f"Driver command execution failed: {e}")
                 raise
+
+        app = getattr(self, "_app", None)
+        if app is not None and method_name in getattr(app, "_denied_commands", []):
+            raise ValueError(f"handle_command: command '{method_name}' is denied by policy")
+        if app is not None and getattr(app, "dry_run", False) is True:
+            return {"dry_run": True, "command": method_name, "params": params}
 
         method = self.Kamio_COMMANDS.get(method_name)
         if not method:

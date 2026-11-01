@@ -108,6 +108,9 @@ class DeviceRegistryMixin:
                     await self.ha_discovery.announce(device_instance)
                 except Exception as e:
                     logger.warning(f"Failed to announce device '{device_id}' to HA: {e}")
+            self._audit(
+                "add_device", device_id=device_id, device_type=device_instance.device_type()
+            )
         except Exception as e:
             logger.error(f"Failed to create device '{device_id}': {e}", exc_info=True)
             # Roll back: node.stop() runs device.on_stop() → shutdown(), which
@@ -160,6 +163,7 @@ class DeviceRegistryMixin:
             with self._device_nodes_lock:
                 self._device_nodes.pop(device_id, None)
             self.registry.unregister_instance(device_id)
+        self._audit("remove_device", device_id=device_id)
 
     async def add_device(self: Any, device_id: str, device_class: Type[Device], **kwargs) -> Device:
         """Create and register a device instance.
@@ -184,6 +188,22 @@ class DeviceRegistryMixin:
                 f"add_device: device with id '{device_id}' is already registered. "
                 f"Use a unique device_id or call remove_device('{device_id}') first."
             )
+        if self._max_devices and len(self.registry.instances) >= self._max_devices:
+            from kamio.errors import PolicyError
+
+            raise PolicyError(
+                f"add_device: device limit {self._max_devices} reached "
+                f"({len(self.registry.instances)} active)"
+            )
+        driver = kwargs.get("driver")
+        if driver is not None and self._allowed_drivers is not None:
+            from kamio.errors import DriverNotAllowedError
+
+            if type(driver).__name__ not in self._allowed_drivers:
+                raise DriverNotAllowedError(
+                    f"add_device: driver '{type(driver).__name__}' is not in "
+                    f"allowed_drivers {self._allowed_drivers}"
+                )
         device_type = device_class.device_type()
         if device_type not in self.registered_types:
             self.register(device_class)

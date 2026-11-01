@@ -9,9 +9,19 @@ from .core.hot_reload import HotReloadManager
 from .core.rules import RuleEvent
 from .data_fields import config, event, state, telemetry
 from .device import Device, command, rule
+from .dsl import make_device_class, when
+from .errors import (
+    CommandNotFoundError,
+    DeviceNotFoundError,
+    DriverNotAllowedError,
+    KamioError,
+    KamioTimeoutError,
+    PolicyError,
+    ValidationError,
+)
 from .plugins.base import Plugin
 
-__version__ = "1.0.0b10"
+__version__ = "1.0.0b11"
 __all__ = [
     "KamioApp",
     "Device",
@@ -29,4 +39,13 @@ __all__ = [
     "CustomNode",
     "CustomNodeManager",
     "HotReloadManager",
+    "make_device_class",
+    "when",
+    "KamioError",
+    "ValidationError",
+    "DeviceNotFoundError",
+    "CommandNotFoundError",
+    "DriverNotAllowedError",
+    "PolicyError",
+    "KamioTimeoutError",
 ]

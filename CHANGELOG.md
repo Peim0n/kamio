@@ -2,6 +2,16 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.0b11] - 2026-11-01
+
+### Added — agent-facing API layer
+- **`kamio.errors`** — typed error hierarchy (`KamioError`, `ValidationError`, `DeviceNotFoundError`, `CommandNotFoundError`, `DriverNotAllowedError`, `PolicyError`, `KamioTimeoutError`); each also inherits the builtin it replaces for compatibility.
+- **`app.get_manifest()`** — full JSON-serializable system snapshot: devices (id, type, schema, state/config/telemetry), rules (incl. DSL specs), plugins, custom nodes, active policies.
+- **`app.describe()`** — compact human/agent-readable summary of the running system plus recent actions.
+- **`app.audit_log`** — ring buffer of mutating operations (`add_device`, `remove_device`, `add_rule`, `remove_rule`, `pause_automation`, `resume_automation`).
+- **Guardrails** — `KamioApp(allowed_drivers=[...], denied_commands=[...], max_devices=N, dry_run=True)`; denied commands raise `PolicyError`/`ValueError`, `dry_run` validates and reports `{"dry_run": True, "would_apply": ...}` without touching drivers or state; `pause_automation()`/`resume_automation()` act as a global rule kill-switch.
+- **`kamio.dsl`** — `make_device_class(name, {"field": state(...)})` builds a Device subclass from a dict spec; `when(Sensor, "temp", ">", 28).then_set(app, "fan1", "power", True)` registers a serializable declarative condition rule.
+
 ## [1.0.0b10] - 2026-11-01
 
 ### Changed

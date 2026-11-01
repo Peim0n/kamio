@@ -122,6 +122,7 @@ class RuleRegistryMixin:
             description=description,
         )
         self.rules.add_rule(rule_obj)
+        self._audit("add_rule", rule=getattr(func, "__name__", str(func)))
         self._schedule_when_running(self.hooks.trigger("on_rule_added", rule_obj))
         self._schedule_when_running(self.event_bus.publish("rule_added", {"rule": rule_obj}))
         return func
@@ -145,4 +146,5 @@ class RuleRegistryMixin:
             return
         await self.hooks.trigger("on_rule_removed", target)
         self.rules.remove_rule(target)
+        self._audit("remove_rule", rule=getattr(func, "__name__", str(func)))
         self._schedule_when_running(self.event_bus.publish("rule_removed", {"rule": target}))

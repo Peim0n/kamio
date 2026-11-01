@@ -11,6 +11,7 @@ from kamio.app.mixins.custom_nodes import CustomNodeFacadeMixin
 from kamio.app.mixins.devices import DeviceRegistryMixin
 from kamio.app.mixins.hooks_events import HookEventFacadeMixin
 from kamio.app.mixins.hot_reload import HotReloadFacadeMixin
+from kamio.app.mixins.introspection import IntrospectionMixin
 from kamio.app.mixins.lifecycle import LifecycleMixin
 from kamio.app.mixins.mqtt import MqttDispatchMixin
 from kamio.app.mixins.plugins import PluginFacadeMixin
@@ -45,6 +46,7 @@ class KamioApp(
     HotReloadFacadeMixin,
     CustomNodeFacadeMixin,
     HookEventFacadeMixin,
+    IntrospectionMixin,
 ):
     """
     Central application class for Kamio Core.
@@ -92,6 +94,10 @@ class KamioApp(
         log_level: Optional[int] = None,
         config_path: Optional[str] = None,
         shutdown_timeout: float = 5.0,
+        allowed_drivers: Optional[List[str]] = None,
+        denied_commands: Optional[List[str]] = None,
+        max_devices: int = 0,
+        dry_run: bool = False,
         **kwargs,
     ):
         """
@@ -120,6 +126,12 @@ class KamioApp(
         resolved_broker = mqtt_broker if mqtt_broker is not None else self.config.mqtt_broker
         self._keepalive = keepalive
         self.shutdown_timeout = shutdown_timeout
+        # Guardrails: driver/command allow-deny lists, device cap, dry-run.
+        self._allowed_drivers = allowed_drivers
+        self._denied_commands = denied_commands or []
+        self._max_devices = max_devices
+        self.dry_run = dry_run
+        self._init_introspection()
 
         if resolved_log_level is not None:
             # Configure only the Kamio logger — do not call basicConfig()
