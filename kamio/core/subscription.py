@@ -34,9 +34,9 @@ class PriorityRegistry:
         entire list on every registration.
 
         Items with equal priority are inserted **after** existing items
-        (LIFO order for equal priorities).  This means that if two callbacks
-        share the same priority, the most recently registered one executes
-        last among that priority group.
+        (FIFO order for equal priorities): if two callbacks share the same
+        priority, the most recently registered one executes last among that
+        priority group.
         """
         with self._lock:
             if key not in self._items:

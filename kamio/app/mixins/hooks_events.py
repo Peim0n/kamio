@@ -12,7 +12,7 @@ class HookEventFacadeMixin:
         Args:
             event_type: The lifecycle event type to hook into.
             hook: Callable invoked when the event fires.
-            priority: Hook execution priority (default 0; lower runs first).
+            priority: Hook execution priority (default 0; higher runs first).
 
         Returns:
             None
@@ -44,7 +44,7 @@ class HookEventFacadeMixin:
             event_type: The event type to subscribe to.
             callback: Callable invoked when the event is published.
             filter_fn: Optional filter callable; only events passing it reach the callback.
-            priority: Subscription priority (default 0; lower runs first).
+            priority: Subscription priority (default 0; higher runs first).
 
         Returns:
             None

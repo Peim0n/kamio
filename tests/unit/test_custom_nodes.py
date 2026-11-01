@@ -184,3 +184,34 @@ def test_custom_node_manager_has_nodes(mock_mqtt_client):
     assert app.custom_nodes.has_nodes() is True
     app.custom_nodes.unregister_node("bridge")
     assert app.custom_nodes.has_nodes() is False
+
+
+@pytest.mark.asyncio
+async def test_route_message_survives_unregister_during_handle(mock_mqtt_client):
+    """unregister_node() inside handle_message must not break routing for the
+    remaining nodes — route_message iterates a snapshot of the registry."""
+    import asyncio
+
+    app = KamioApp()
+
+    removed = {}
+
+    class SlowNode(CustomNode):
+        async def start(self):
+            pass
+
+        async def handle_message(self, topic, payload):
+            # Unregister both nodes mid-route, then yield so the dict
+            # mutation lands while route_message is still iterating.
+            app.custom_nodes.unregister_node("n2")
+            await asyncio.sleep(0)
+            removed["called"] = True
+
+    n1 = SlowNode(mock_mqtt_client, "t")
+    n2 = SlowNode(mock_mqtt_client, "t")
+    app.register_custom_node("n1", n1)
+    app.register_custom_node("n2", n2)
+
+    handled = await app.custom_nodes.route_message("t/x", b"p")
+    assert removed.get("called") is True
+    assert handled is True  # no RuntimeError; n1 handled it

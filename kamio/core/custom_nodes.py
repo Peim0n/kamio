@@ -454,7 +454,10 @@ class CustomNodeManager:
         Returns True if at least one node handled the message.
         """
         handled = False
-        for name, node in self._nodes.items():
+        # Snapshot: unregister_node() may remove entries while an awaited
+        # handle_message() yields — iterating the live dict would raise
+        # RuntimeError and drop the message for the remaining nodes.
+        for name, node in list(self._nodes.items()):
             if node.matches(topic):
                 try:
                     await node.handle_message(topic, payload)
