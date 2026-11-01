@@ -568,6 +568,61 @@ def test_on_mqtt_message_no_loop(mock_mqtt):
 
 
 @pytest.mark.asyncio
+async def test_on_mqtt_message_skips_custom_nodes_and_event_bus_when_unused(mock_mqtt):
+    """No route_message / mqtt_message_received work without nodes or subscribers."""
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-msg-skip")
+    await app.start()
+    try:
+        with (
+            patch.object(app.custom_nodes, "route_message", new=MagicMock()) as route,
+            patch.object(app.event_bus, "publish", new=MagicMock()) as publish,
+        ):
+            app._on_mqtt_message(mock_mqtt, "other/topic", b"hello", qos=1)
+        route.assert_not_called()
+        publish.assert_not_called()
+    finally:
+        await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_on_mqtt_message_routes_when_nodes_and_subscribers_exist(mock_mqtt):
+    """Custom nodes and mqtt_message_received subscribers still get messages."""
+    from kamio.core.custom_nodes import CustomNode
+
+    class _Node(CustomNode):
+        def __init__(self, client, prefix):
+            super().__init__(client, prefix)
+            self.received: list = []
+
+        async def start(self):
+            pass
+
+        async def handle_message(self, topic, payload):
+            self.received.append((topic, payload))
+
+    mock_mqtt.simulate_connect()
+    app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-msg-fanout")
+    await app.start()
+    try:
+        node = _Node(app.mqtt_client, "other")
+        app.custom_nodes.register_node("n", node)
+        events: list = []
+        app.event_bus.subscribe("mqtt_message_received", events.append)
+
+        app._on_mqtt_message(mock_mqtt, "other/topic", b"hello", qos=1)
+
+        assert await wait_until(lambda: node.received == [("other/topic", b"hello")], timeout=2.0)
+        assert await wait_until(lambda: len(events) == 1, timeout=2.0)
+        assert events[0]["topic"] == "other/topic"
+        assert events[0]["payload"] == b"hello"
+        assert events[0]["qos"] == 1
+        assert events[0]["timestamp"] is not None
+    finally:
+        await app.stop()
+
+
+@pytest.mark.asyncio
 async def test_run_coro_threadsafe_create_task_runtime_error(mock_mqtt):
     """_run_coro_threadsafe should handle RuntimeError from create_task."""
     app = KamioApp(mqtt_broker=mock_mqtt, client_id="test-coro-runtime")

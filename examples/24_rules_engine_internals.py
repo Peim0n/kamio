@@ -78,6 +78,7 @@ class MockApp:
         self.event_bus.publish = AsyncMock()
         self.state = MagicMock()
         self.state.get_all_states = MagicMock(return_value={})
+        self.state.get_states_snapshot = MagicMock(return_value={})
         self.registry = MagicMock()
         self.registry.get_instance = MagicMock(return_value=None)
 

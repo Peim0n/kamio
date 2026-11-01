@@ -453,3 +453,34 @@ async def test_rule_signature_and_mro_are_computed_once(monkeypatch):
     assert calls.count("base") == 3
     assert len(sig_calls) == 2
     assert app.rules._base_types_cache[LeafSensor] == ("basesensor", "device")
+
+
+@pytest.mark.asyncio
+async def test_interval_rules_share_state_snapshot_between_updates():
+    app = KamioApp()
+    seen = {"a": [], "b": []}
+    done = asyncio.Event()
+
+    def _record(name, event):
+        seen[name].append(event.data)
+        if len(seen["a"]) >= 1 and len(seen["b"]) >= 1:
+            done.set()
+
+    @app.rule(interval=60, run_on_start=True)
+    async def rule_a(event: RuleEvent, app: KamioApp):
+        _record("a", event)
+
+    @app.rule(interval=60, run_on_start=True)
+    async def rule_b(event: RuleEvent, app: KamioApp):
+        _record("b", event)
+
+    app.state.update_state("dev1", {"power": True})
+    await app.start()
+    try:
+        await asyncio.wait_for(done.wait(), timeout=5.0)
+    finally:
+        await app.stop()
+
+    assert seen["a"][0] is seen["b"][0]
+    assert seen["a"][0] == app.state.get_all_states()
+    assert seen["a"][0]["dev1"] == {"power": True}

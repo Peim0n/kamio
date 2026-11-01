@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import queue
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from kamio.plugins.base import Plugin
@@ -12,9 +13,26 @@ if TYPE_CHECKING:
     from kamio.core.event_bus import EventBus
 
 
+class _QueueHandler(logging.handlers.QueueHandler):
+    """QueueHandler that also drops ``stack_info`` after pre-formatting.
+
+    Python < 3.12 leaves ``stack_info`` on the prepared record, so the file
+    handler's formatter would append the stack a second time.
+    """
+
+    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+        record = super().prepare(record)
+        record.stack_info = None
+        return record
+
+
 class LoggingPlugin(Plugin):
     """
     Built-in plugin that logs all Kamio events to a rotating file.
+
+    Records are enqueued on the calling (event loop) thread and written to the
+    file by a background ``QueueListener`` thread, so file I/O and rollover
+    never block the loop.
 
     Configuration keys:
         file     (str)  : Log file path. Default: 'Kamio.log'.
@@ -43,6 +61,8 @@ class LoggingPlugin(Plugin):
         """Initialize the logging plugin with default config values."""
         super().__init__()
         self._handler: Optional[logging.Handler] = None
+        self._file_handler: Optional[logging.Handler] = None
+        self._listener: Optional[logging.handlers.QueueListener] = None
 
     def configure(self, config: Dict[str, Any]) -> None:
         """Apply configuration dict: file, level, max_bytes, backup_count."""
@@ -55,17 +75,30 @@ class LoggingPlugin(Plugin):
         self._max_bytes: int = config.get("max_bytes", 10 * 1024 * 1024)
         self._backup_count: int = config.get("backup_count", 3)
         self._handler = None
+        self._file_handler = None
+        self._listener = None
 
     async def on_load(self, app: "KamioApp", context: Optional["PluginContext"] = None) -> None:
-        """Set up the rotating file handler and attach it to the Kamio logger."""
-        handler = logging.handlers.RotatingFileHandler(
+        """Start a background file writer and attach a queue handler to the Kamio logger."""
+        file_handler = logging.handlers.RotatingFileHandler(
             self._file,
             maxBytes=self._max_bytes,
             backupCount=self._backup_count,
             encoding="utf-8",
         )
+        file_handler.setLevel(self._level)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        log_queue: "queue.SimpleQueue[logging.LogRecord]" = queue.SimpleQueue()
+        listener = logging.handlers.QueueListener(
+            log_queue, file_handler, respect_handler_level=True
+        )
+        handler = _QueueHandler(log_queue)
         handler.setLevel(self._level)
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        listener.start()
+        self._file_handler = file_handler
+        self._listener = listener
         self._handler = handler
         logging.getLogger("Kamio").addHandler(handler)
         self.logger.info(
@@ -73,13 +106,18 @@ class LoggingPlugin(Plugin):
         )
 
     async def on_unload(self, app: "KamioApp") -> None:
-        """Remove the file handler and close it."""
+        """Detach the queue handler, drain pending records, and close the file."""
         if self._handler:
-            # Detach first: a concurrent emit against a closed handler would
-            # make RotatingFileHandler reopen the file and leak the fd.
             logging.getLogger("Kamio").removeHandler(self._handler)
             self._handler.close()
             self._handler = None
+        if self._listener:
+            # stop() writes every record already enqueued before returning.
+            self._listener.stop()
+            self._listener = None
+        if self._file_handler:
+            self._file_handler.close()
+            self._file_handler = None
 
     def subscribe_events(self, ctx: "PluginContext") -> None:
         """Subscribe to all device and rule events for logging."""
@@ -101,9 +139,8 @@ class LoggingPlugin(Plugin):
     def _log_event(self, data: dict) -> None:
         """Log an event. Called from the event bus — kept synchronous for speed.
 
-        The file handler uses a queue internally (RotatingFileHandler writes
-        are buffered by the OS), so this does not block the event loop
-        measurably for typical event volumes.
+        The file write happens on the QueueListener thread; on the loop this
+        is only an in-memory enqueue.
         """
         if not self.logger.isEnabledFor(self._event_level):
             return

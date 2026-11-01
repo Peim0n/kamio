@@ -1619,6 +1619,35 @@ class TestStateManager:
         all_states["d1"]["a"] = 999
         assert sm.get_state("d1", "a") == 1
 
+    def test_get_states_snapshot_shared_until_update(self):
+        sm = StateManager()
+        sm.update_state("d1", {"a": 1})
+        first = sm.get_states_snapshot()
+        assert first == {"d1": {"a": 1}}
+        assert sm.get_states_snapshot() is first
+        sm.update_state("d1", {"a": 2})
+        second = sm.get_states_snapshot()
+        assert second is not first
+        assert second == {"d1": {"a": 2}}
+        assert first == {"d1": {"a": 1}}
+
+    def test_get_states_snapshot_does_not_alias_live_state(self):
+        sm = StateManager()
+        sm.update_state("d1", {"a": 1})
+        snap = sm.get_states_snapshot()
+        assert snap["d1"] is not sm._states["d1"]
+        sm.update_state("d2", {"b": 2})
+        assert "d2" not in snap
+        assert sm.get_states_snapshot() == {"d1": {"a": 1}, "d2": {"b": 2}}
+
+    def test_get_states_snapshot_ignored_updates_keep_cache(self):
+        sm = StateManager()
+        sm.update_state("d1", {"a": 1})
+        snap = sm.get_states_snapshot()
+        sm.update_state("d1", {})
+        sm.update_state("d1", "not a dict")
+        assert sm.get_states_snapshot() is snap
+
     @pytest.mark.asyncio
     async def test_set_state_success(self, mock_mqtt):
         sm = StateManager()
