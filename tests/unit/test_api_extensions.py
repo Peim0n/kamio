@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import os
+import threading
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -36,6 +38,28 @@ async def test_event_bus_priority_invokes_high_priority_first():
     await bus.publish("test", {"value": 1})
 
     assert order == ["high", "low"]
+
+
+def test_event_bus_has_subscribers_tracks_subscribe_unsubscribe():
+    bus = EventBus()
+
+    def cb(data: dict):
+        pass
+
+    assert bus.has_subscribers("x") is False
+    bus.subscribe("x", cb)
+    assert bus.has_subscribers("x") is True
+    assert bus.has_subscribers("y") is False
+    bus.unsubscribe("x", cb)
+    assert bus.has_subscribers("x") is False
+
+
+@pytest.mark.asyncio
+async def test_event_bus_publish_without_subscribers_does_not_dispatch():
+    bus = EventBus()
+    with patch.object(bus, "_dispatch") as dispatch:
+        await bus.publish("nobody", {"value": 1})
+    dispatch.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -448,16 +472,45 @@ async def test_logging_plugin_loads_with_config(tmp_path):
 
     kamio_logger = logging.getLogger("Kamio")
     assert plugin._handler in kamio_logger.handlers
+    assert isinstance(plugin._handler, logging.handlers.QueueHandler)
+    listener = plugin._listener
+    assert listener is not None
 
     await app.publish_event("device_added", {"device_id": "dev-1"})
-    plugin._handler.flush()
-    assert "dev-1" in log_file.read_text(encoding="utf-8")
 
     await app.unload_plugin("logging")
 
+    # Unload drains the queue before closing the file.
+    assert "dev-1" in log_file.read_text(encoding="utf-8")
     assert plugin._handler is None
+    assert plugin._listener is None
+    assert plugin._file_handler is None
+    assert listener._thread is None
     assert not any(getattr(h, "baseFilename", None) == str(log_file) for h in kamio_logger.handlers)
     assert app.event_bus.list_subscribers("device_added") == []
+
+
+@pytest.mark.asyncio
+async def test_logging_plugin_writes_file_off_calling_thread(tmp_path, monkeypatch):
+    app = KamioApp()
+    log_file = tmp_path / "app.log"
+    plugin = await app.load_plugin(LoggingPlugin, config={"file": str(log_file), "level": "INFO"})
+    emit_threads = []
+    original_emit = logging.handlers.RotatingFileHandler.emit
+
+    def recording_emit(self, record):
+        emit_threads.append(threading.get_ident())
+        original_emit(self, record)
+
+    monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit", recording_emit)
+    try:
+        await app.publish_event("device_added", {"device_id": "dev-2"})
+    finally:
+        await app.unload_plugin("logging")
+
+    assert emit_threads
+    assert threading.get_ident() not in emit_threads
+    assert "dev-2" in log_file.read_text(encoding="utf-8")
 
 
 class _CountingDict(dict):

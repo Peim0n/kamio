@@ -73,6 +73,14 @@ class PriorityRegistry:
         with self._lock:
             return [v for _, v in self._items.get(key, [])]
 
+    def has(self, key: str) -> bool:
+        """Return whether key has at least one registered value.
+
+        Lock-free: a single dict lookup is atomic under the GIL, which keeps
+        this cheap enough for per-message hot paths.
+        """
+        return bool(self._items.get(key))
+
     def keys(self) -> List[str]:
         """Return all keys that have at least one registered value."""
         with self._lock:
@@ -117,6 +125,10 @@ class AsyncPriorityDispatcher:
     def _list(self, event_type: str) -> List[Any]:
         """List items for an event type in priority order."""
         return self._registry.list(event_type)
+
+    def _has(self, event_type: str) -> bool:
+        """Return whether event_type has at least one item."""
+        return self._registry.has(event_type)
 
     def _event_types(self) -> List[str]:
         """Return all event types with at least one item."""

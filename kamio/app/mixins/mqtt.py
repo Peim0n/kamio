@@ -46,6 +46,8 @@ class MqttDispatchMixin:
 
     def _publish_event_threadsafe(self: Any, event_type: str, data: Dict[str, Any]) -> None:
         """Publish an event bus event from a non-asyncio (MQTT) thread if the loop is running."""
+        if not self.event_bus.has_subscribers(event_type):
+            return
         self._run_coro_threadsafe(self.event_bus.publish(event_type, data))
 
     def _schedule_when_running(self: Any, coro) -> None:
@@ -152,11 +154,13 @@ class MqttDispatchMixin:
             return
 
         try:
-            self._run_coro_threadsafe(self.custom_nodes.route_message(topic, payload))
-            self._publish_event_threadsafe(
-                "mqtt_message_received",
-                {"topic": topic, "payload": payload, "qos": qos},
-            )
+            if self.custom_nodes.has_nodes():
+                self._run_coro_threadsafe(self.custom_nodes.route_message(topic, payload))
+            if self.event_bus.has_subscribers("mqtt_message_received"):
+                self._publish_event_threadsafe(
+                    "mqtt_message_received",
+                    {"topic": topic, "payload": payload, "qos": qos},
+                )
             device_id, msg_type = mqtt_topics.parse(topic)
             targets = [self.server_node]
             # Snapshot the device-node map so a concurrent add/remove cannot
