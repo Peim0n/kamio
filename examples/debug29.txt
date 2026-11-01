@@ -1,4 +1,0 @@
-Kamio_FIELDS keys = ['power', 'brightness', 'mode', 'temperature', 'location']
-'power' in Kamio_FIELDS = True
-light.__dict__ = {'_bg_tasks': set(), 'logger': <Logger Kamio.device.testlight (DEBUG)>, 'node': None, 'driver': None, '_app': None, '_keepalive_interval': 30.0, '_keepalive_task': None, '_on_state_changed': None, '_on_rules_trigger': None, '_echo_cache': <kamio.device.EchoCache object at 0x000002727069B7F0>, 'power': True, 'brightness': 50, 'mode': 'manual', 'temperature': 22.0, 'location': 'kitchen'}
-light.power = True
