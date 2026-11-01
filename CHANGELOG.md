@@ -2,6 +2,11 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.0b8] - 2026-11-01
+
+### Documentation
+- **README and PyPI description** — removed the stale `v1.0.0b4` from the README title and doc links (the PyPI project page renders the README); the version badge now reads the current release from PyPI. Dropped hardcoded versions from the headers of `docs/api.md` and `docs/architecture.md`.
+
 ## [1.0.0b7] - 2026-11-01
 
 ### Performance
