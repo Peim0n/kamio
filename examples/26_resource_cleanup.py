@@ -654,6 +654,7 @@ class TestResourceCleanup(unittest.IsolatedAsyncioTestCase):
         mock_app = MagicMock()
         mock_app.state = MagicMock()
         mock_app.state.get_all_states = MagicMock(return_value={})
+        mock_app.state.get_states_snapshot = MagicMock(return_value={})
 
         engine = RuleEngine(mock_app)
 

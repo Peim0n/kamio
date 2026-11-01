@@ -37,6 +37,9 @@ class StateManager(BaseCorrelationManager):
         super().__init__(max_pending=max_pending)
         self._states: Dict[str, Dict[str, Any]] = {}
         self._state_lock = threading.RLock()
+        self._version = 0
+        self._snapshot: Optional[Dict[str, Dict[str, Any]]] = None
+        self._snapshot_version = -1
 
     def get_state(self, device_id: str, field: Optional[str] = None) -> Any:
         """
@@ -58,6 +61,19 @@ class StateManager(BaseCorrelationManager):
         with self._state_lock:
             return {k: v.copy() for k, v in self._states.items()}
 
+    def get_states_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Return a copy of all device states shared until the next state update.
+
+        Unlike :meth:`get_all_states`, repeated calls between updates return
+        the *same* object, so callers must treat it as read-only.  The
+        snapshot never aliases the live state table.
+        """
+        with self._state_lock:
+            if self._snapshot is None or self._snapshot_version != self._version:
+                self._snapshot = {k: v.copy() for k, v in self._states.items()}
+                self._snapshot_version = self._version
+            return self._snapshot
+
     def update_state(self, device_id: str, data: Dict[str, Any]) -> None:
         """
         Merge ``data`` into the stored state for ``device_id``.
@@ -75,6 +91,7 @@ class StateManager(BaseCorrelationManager):
             if device_id not in self._states:
                 self._states[device_id] = {}
             self._states[device_id].update(data)
+            self._version += 1
 
     async def set_state(
         self,

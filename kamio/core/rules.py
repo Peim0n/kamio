@@ -18,7 +18,10 @@ class RuleEvent:
     Passed as the first argument to every rule function.
 
     Attributes:
-        data:       Changed field values  ``{"power": True, ...}``
+        data:       Changed field values  ``{"power": True, ...}``.  For interval
+                    rules, a ``{device_id: {field: value}}`` snapshot of all
+                    states shared with other rules until the next state update.
+                    Treat it as read-only in both cases.
         device_id:  ID of the device that triggered the rule, or ``None`` for interval rules.
         kind:       ``"event"`` for device-triggered rules, ``"interval"`` for timer rules.
 
@@ -285,7 +288,7 @@ class RuleEngine:
         async def _loop():
             if rule.run_on_start and self._is_running and rule.enabled:
                 snapshot = RuleEvent(
-                    data=self.app.state.get_all_states(),
+                    data=self.app.state.get_states_snapshot(),
                     device_id=None,
                     kind="interval",
                 )
@@ -298,7 +301,7 @@ class RuleEngine:
                         continue
 
                     snapshot = RuleEvent(
-                        data=self.app.state.get_all_states(),
+                        data=self.app.state.get_states_snapshot(),
                         device_id=None,
                         kind="interval",
                     )
