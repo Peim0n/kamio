@@ -80,6 +80,9 @@ class MockState:
     def get_all_states(self) -> dict:
         return {}
 
+    def get_states_snapshot(self) -> dict:
+        return {}
+
 
 class MockRegistry:
     """Заглушка DeviceRegistry с поддержкой register/unregister."""
