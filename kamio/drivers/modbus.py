@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
-from typing import Any, Iterable, List, Optional, Union
+from typing import Any, Iterable, List, Optional
 
 from .base import BaseDriver
 
