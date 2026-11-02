@@ -417,7 +417,7 @@ class TestExecute:
     @pytest.mark.asyncio
     async def test_execute_invalid_command_raises(self):
         drv = _make_driver()
-        with pytest.raises(ValueError, match="Unsupported Modbus command"):
+        with pytest.raises(NotImplementedError, match="does not support command"):
             await drv.execute("bogus", {"address": 0, "value": 0})
 
     @pytest.mark.asyncio

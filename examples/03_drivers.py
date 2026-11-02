@@ -93,8 +93,10 @@ class ClimateController(Device):
 #       timeout=5.0,            # таймаут чтения/записи (сек)
 #       max_reconnect_attempts=3,
 #   )
-#   # execute("reboot", {"command": "reboot", "wait_response": True})
-#   # read("status", {"command": "show status"})
+#   # Транспортные команды: send / request с params["payload"];
+#   # "\n" в конце строки и разбор ответа делает сам драйвер.
+#   # execute("request", {"payload": "reboot"})
+#   # read("status", {"payload": "show status"})
 #
 # --- UDPDriver — для датчиков и устройств по UDP ---
 #
@@ -104,8 +106,9 @@ class ClimateController(Device):
 #       timeout=1.0,
 #       local_port=0,           # 0 = ОС выберет свободный порт
 #   )
-#   # execute("set_power", {"value": True, "command": "PWR ON", "wait_response": False})
-#   # read("temperature", {"command": "GET TEMP", "read_bytes": 1024})
+#   # execute("send", {"payload": "PWR ON"})            # одна датаграмма
+#   # execute("request", {"payload": b"\x01\x03", "read_bytes": 64})
+#   # read("temperature", {"payload": "GET TEMP", "read_bytes": 1024})
 #
 # --- ModbusTCPDriver — для ПЛК и промышленных контроллеров ---
 #
@@ -128,8 +131,8 @@ class ClimateController(Device):
 #       timeout=1.0,
 #       read_limit=4096,        # макс. байт на одно чтение
 #   )
-#   # execute("set_temp", {"command": "SET TEMP", "value": 25, "wait_response": True})
-#   # read("pressure", {"command": "GET PRESS"})
+#   # execute("request", {"payload": "SET TEMP 25"})   # запись + одна строка ответа
+#   # read("pressure", {"payload": "GET PRESS"})
 #
 # --- HTTPDeviceDriver — для REST API и IP-камер (требует aiohttp) ---
 #
@@ -139,7 +142,7 @@ class ClimateController(Device):
 #       timeout=10.0,
 #   )
 #   # read("status", {"path": "/device/status"})
-#   # execute("reboot", {"method": "POST", "path": "/device/reboot", "json": {"delay": 5}})
+#   # execute("post", {"path": "/device/reboot", "json": {"delay": 5}})
 #
 # --- GPIOChipDriver — для GPIO через libgpiod (требует gpiod, только Linux) ---
 #
@@ -256,6 +259,8 @@ async def main():
     # Создаём mock-драйвер для климат-контроллера.
     # initial_state задаёт значения, которые драйвер будет возвращать
     # при read() для полей telemetry.
+    # MockHardwareDriver владеет только set_<field>; остальные команды
+    # (emergency_stop) получают NotImplementedError и уходят в @command.
     climate_driver = MockHardwareDriver(
         latency_range=(0.01, 0.05),
         failure_rate=0.0,
@@ -292,7 +297,7 @@ async def main():
 
     # --- Вызов команды через handle_command ---
     # handle_command сначала пытается выполнить команду через драйвер
-    # (driver.execute(method_name, params)), затем через @command-метод.
+    # (driver.execute(method_name, params)); на NotImplementedError — через @command-метод.
     result = await climate.handle_command("emergency_stop", {})
     logger.info(f"Команда emergency_stop: {result}")
 
@@ -385,11 +390,10 @@ async def demo_driver_execute_via_handle_command():
     logger.info(f"Драйвер state: fan_speed={driver.state.get('fan_speed')}")
 
     # handle_command("emergency_stop", {})
-    # Драйвер не знает команду "emergency_stop" → NotImplementedError.
-    # Но MockHardwareDriver не вызывает NotImplementedError — он возвращает
-    # mock_success. В реальном драйвере, если метод не реализован,
-    # будет NotImplementedError и фреймворк вызовет @command-метод.
-    # Здесь emergency_stop — это @command-метод, который вызывается после драйвера.
+    # "emergency_stop" не входит в MockHardwareDriver.COMMANDS ("set_*") →
+    # BaseDriver кидает NotImplementedError до тела execute() → вызывается
+    # @command-метод устройства. Так же ведут себя все драйверы: каждый владеет
+    # только своими транспортными командами (Telnet/Serial/UDP: send/request).
     result = await device.handle_command("emergency_stop", {})
     logger.info(f"handle_command('emergency_stop'): {result}")
     logger.info(f"Устройство после emergency_stop: relay_on={device.relay_on}, fan_speed={device.fan_speed}")
@@ -605,7 +609,7 @@ async def demo_mock_state_dict():
 
     MockHardwareDriver.execute() проверяет префикс "set_" в имени команды:
     - "set_<field>" → обновляет self.state[field] = params["value"]
-    - другие команды → возвращает {"status": "ok", "result": "mock_success"}
+    - другие команды → NotImplementedError (команду обрабатывает устройство)
 
     Это позволяет использовать MockHardwareDriver для тестирования
     логики handle_state() и handle_command() без реального оборудования.
@@ -641,9 +645,11 @@ async def demo_mock_state_dict():
     logger.info(f"execute('set_temperature', {{'value': 23.5}}): {result}")
     logger.info(f"state['temperature'] = {driver.state['temperature']}")
 
-    # Команда без префикса "set_" → возвращает mock_success
-    result = await driver.execute("reboot", {})
-    logger.info(f"execute('reboot', {{}}): {result} (без префикса set_)")
+    # Команда без префикса "set_" — не транспортная → NotImplementedError
+    try:
+        await driver.execute("reboot", {})
+    except NotImplementedError as e:
+        logger.info(f"execute('reboot', {{}}): NotImplementedError ({e})")
 
     # Чтение значений из state dict
     temp = await driver.read("temperature")

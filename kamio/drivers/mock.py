@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .base import BaseDriver
 
@@ -20,13 +20,17 @@ class MockHardwareDriver(BaseDriver):
                         by ``execute("set_<field>", ...)``.
     """
 
+    COMMANDS = ("set_*",)
+
     def __init__(
         self,
         latency_range: tuple = (0.01, 0.1),
         failure_rate: float = 0.0,
         initial_state: Optional[Dict[str, Any]] = None,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.latency_range = latency_range
         self.failure_rate = failure_rate
         self.state = initial_state or {}
@@ -57,13 +61,9 @@ class MockHardwareDriver(BaseDriver):
 
         self.logger.debug(f"Mock executing {command_name} with {params}")
 
-        # Simple logic for mock state updates
-        if command_name.startswith("set_"):
-            field = command_name[4:]
-            self.state[field] = params.get("value")
-            return {"status": "ok", "field": field, "value": self.state[field]}
-
-        return {"status": "ok", "result": "mock_success"}
+        field = command_name[4:]
+        self.state[field] = params.get("value")
+        return {"status": "ok", "field": field, "value": self.state[field]}
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Simulate a read operation, returning canned data."""

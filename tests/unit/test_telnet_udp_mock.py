@@ -99,12 +99,12 @@ class TestTelnetDriver:
         drv.reader, drv.writer = reader, writer
         # Patch _ensure_connected to avoid reconnect logic.
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.execute("ping", {})
+            result = await drv.execute("request", {"payload": "ping"})
         writer.write.assert_called_once_with(b"ping\n")
-        assert result == {"status": "ok", "command": "ping", "response": "OK"}
+        assert result == {"status": "ok", "command": "request", "response": "OK"}
 
     @pytest.mark.asyncio
-    async def test_execute_with_value_and_command_param(self):
+    async def test_execute_bytes_payload_keeps_existing_newline(self):
         drv = TelnetDriver("10.0.0.1")
         reader = MagicMock()
         reader.readline = AsyncMock(return_value=b"DONE\n")
@@ -112,7 +112,7 @@ class TestTelnetDriver:
         writer.drain = AsyncMock()
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.execute("ignored", {"command": "SET", "value": 42})
+            result = await drv.execute("request", {"payload": b"SET 42\n"})
         writer.write.assert_called_once_with(b"SET 42\n")
         assert result["response"] == "DONE"
 
@@ -125,9 +125,10 @@ class TestTelnetDriver:
         writer.drain = AsyncMock()
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.execute("ping", {"wait_response": False})
+            result = await drv.execute("send", {"payload": "ping"})
+        writer.write.assert_called_once_with(b"ping\n")
         reader.readline.assert_not_called()
-        assert result == {"status": "ok", "command": "ping", "response": ""}
+        assert result == {"status": "ok", "command": "send"}
 
     @pytest.mark.asyncio
     async def test_execute_read_timeout(self):
@@ -141,7 +142,7 @@ class TestTelnetDriver:
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
             with pytest.raises(TimeoutError):
-                await drv.execute("ping", {})
+                await drv.execute("request", {"payload": "ping"})
         writer.close.assert_called_once()
         assert drv.writer is None
         assert drv.reader is None
@@ -168,8 +169,8 @@ class TestTelnetDriver:
         with patch("kamio.drivers.telnet.asyncio.open_connection", new=open_conn):
             drv.reader, drv.writer = stale_reader, writer1
             with pytest.raises(TimeoutError):
-                await drv.execute("ping", {})
-            result = await drv.execute("ping2", {})
+                await drv.execute("request", {"payload": "ping"})
+            result = await drv.execute("request", {"payload": "ping2"})
         assert result["response"] == "FRESH"
         assert open_conn.await_count == 1
 
@@ -191,7 +192,7 @@ class TestTelnetDriver:
         open_conn = AsyncMock(side_effect=[(reader1, writer1), (reader2, writer2)])
         with patch("kamio.drivers.telnet.asyncio.open_connection", new=open_conn):
             await drv.connect()
-            result = await drv.execute("ping", {})
+            result = await drv.execute("request", {"payload": "ping"})
         # Reconnect happened through the real _ensure_connected path.
         assert open_conn.await_count == 2
         assert drv.writer is writer2
@@ -207,21 +208,18 @@ class TestTelnetDriver:
         writer.drain = AsyncMock()
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.read("temperature", {"command": "GET TEMP"})
+            result = await drv.read("temperature", {"payload": "GET TEMP"})
         writer.write.assert_called_once_with(b"GET TEMP\n")
         assert result == {"status": "ok", "field": "temperature", "response": "42"}
 
     @pytest.mark.asyncio
-    async def test_read_with_value(self):
+    async def test_read_without_payload_not_implemented(self):
         drv = TelnetDriver("10.0.0.1")
-        reader = MagicMock()
-        reader.readline = AsyncMock(return_value=b"ok\n")
         writer = MagicMock()
-        writer.drain = AsyncMock()
-        drv.reader, drv.writer = reader, writer
-        with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            await drv.read("field", {"command": "CMD", "value": "X"})
-        writer.write.assert_called_once_with(b"CMD X\n")
+        drv.writer = writer
+        with pytest.raises(NotImplementedError, match="payload"):
+            await drv.read("field")
+        writer.write.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_read_no_command(self):
@@ -232,7 +230,7 @@ class TestTelnetDriver:
         writer.drain = AsyncMock()
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.read("field", {"command": ""})
+            result = await drv.read("field", {"payload": ""})
         writer.write.assert_not_called()
         assert result["response"] == "data"
 
@@ -248,7 +246,7 @@ class TestTelnetDriver:
         drv.reader, drv.writer = reader, writer
         with patch.object(drv, "_ensure_connected", new=AsyncMock()):
             with pytest.raises(TimeoutError):
-                await drv.read("field", {})
+                await drv.read("field", {"payload": "x"})
         assert drv.writer is None
 
     @pytest.mark.asyncio
@@ -266,23 +264,20 @@ class TestTelnetDriver:
             drv.reader, drv.writer = reader, writer
 
         with patch.object(drv, "_ensure_connected", new=AsyncMock(side_effect=fake_ensure)):
-            result = await drv.read("temperature", {"command": "GET TEMP"})
+            result = await drv.read("temperature", {"payload": "GET TEMP"})
         assert writer.write.call_count == 2
         assert result["response"] == "42"
 
     @pytest.mark.asyncio
-    async def test_read_no_response(self):
+    async def test_execute_requires_payload_and_rejects_foreign(self):
         drv = TelnetDriver("10.0.0.1")
-        reader = MagicMock()
-        reader.readline = AsyncMock(return_value=b"should not be called\n")
         writer = MagicMock()
-        writer.drain = AsyncMock()
-        drv.reader, drv.writer = reader, writer
-        with patch.object(drv, "_ensure_connected", new=AsyncMock()):
-            result = await drv.read("field", {"wait_response": False})
-        writer.write.assert_called_once_with(b"field\n")
-        reader.readline.assert_not_called()
-        assert result == {"status": "ok", "field": "field", "response": ""}
+        drv.writer = writer
+        with pytest.raises(ValueError, match="payload"):
+            await drv.execute("send", {})
+        with pytest.raises(NotImplementedError):
+            await drv.execute("set_power", {"value": True})
+        writer.write.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ensure_connected_already_connected(self):
@@ -424,9 +419,9 @@ class TestUDPDriver:
         transport = MagicMock()
         drv._transport = transport
         drv._protocol = MagicMock()
-        result = await drv.execute("PWR ON", {})
+        result = await drv.execute("send", {"payload": "PWR ON"})
         transport.sendto.assert_called_once_with(b"PWR ON", ("10.0.0.2", 5000))
-        assert result == {"status": "ok", "sent": 6}
+        assert result == {"status": "ok", "command": "send", "sent": 6}
 
     @pytest.mark.asyncio
     async def test_execute_with_response(self):
@@ -436,8 +431,8 @@ class TestUDPDriver:
         protocol.recv = AsyncMock(return_value=b"OK")
         drv._transport = transport
         drv._protocol = protocol
-        result = await drv.execute("cmd", {"wait_response": True})
-        assert result == b"OK"
+        result = await drv.execute("request", {"payload": "cmd"})
+        assert result == {"status": "ok", "command": "request", "response": b"OK"}
 
     @pytest.mark.asyncio
     async def test_execute_with_response_custom_bytes(self):
@@ -447,15 +442,15 @@ class TestUDPDriver:
         protocol.recv = AsyncMock(return_value=b"DATA")
         drv._transport = transport
         drv._protocol = protocol
-        result = await drv.execute("cmd", {"wait_response": True, "read_bytes": 512})
+        result = await drv.execute("request", {"payload": b"cmd", "read_bytes": 512})
         protocol.recv.assert_awaited_once_with(512)
-        assert result == b"DATA"
+        assert result["response"] == b"DATA"
 
     @pytest.mark.asyncio
     async def test_execute_not_connected_raises(self):
         drv = UDPDriver("10.0.0.2", 5000)
         with pytest.raises(RuntimeError, match="not connected"):
-            await drv.execute("cmd", {})
+            await drv.execute("send", {"payload": "cmd"})
 
     @pytest.mark.asyncio
     async def test_read_basic(self):
@@ -465,7 +460,7 @@ class TestUDPDriver:
         protocol.recv = AsyncMock(return_value=b"42")
         drv._transport = transport
         drv._protocol = protocol
-        result = await drv.read("temperature", {"command": "GET TEMP"})
+        result = await drv.read("temperature", {"payload": "GET TEMP"})
         transport.sendto.assert_called_once_with(b"GET TEMP", ("10.0.0.2", 5000))
         assert result == {"status": "ok", "field": "temperature", "data": b"42"}
 
@@ -477,9 +472,8 @@ class TestUDPDriver:
         protocol.recv = AsyncMock(return_value=b"data")
         drv._transport = transport
         drv._protocol = protocol
-        # Empty command_name, command, and payload -> _build_payload returns
-        # b"" which is falsy, so _send is skipped.
-        result = await drv.read("", {"command": "", "payload": ""})
+        # Empty payload -> pure receive, nothing is sent.
+        result = await drv.read("", {"payload": ""})
         transport.sendto.assert_not_called()
         assert result == {"status": "ok", "field": "", "data": b"data"}
 
@@ -487,38 +481,13 @@ class TestUDPDriver:
     async def test_read_not_connected_raises(self):
         drv = UDPDriver("10.0.0.2", 5000)
         with pytest.raises(RuntimeError, match="not connected"):
-            await drv.read("field", {})
+            await drv.read("field", {"payload": "x"})
 
-    # _build_payload variations
-    def test_build_payload_from_command_name(self):
-        drv = UDPDriver("h", 1)
-        assert drv._build_payload("CMD", {}) == b"CMD"
+    def test_encode(self):
+        from kamio.drivers.udp import _encode
 
-    def test_build_payload_with_value(self):
-        drv = UDPDriver("h", 1)
-        assert drv._build_payload("CMD", {"value": True}) == b"CMD True"
-
-    def test_build_payload_from_command_param(self):
-        drv = UDPDriver("h", 1)
-        assert drv._build_payload("ignored", {"command": "PWR ON"}) == b"PWR ON"
-
-    def test_build_payload_from_payload_param_bytes(self):
-        drv = UDPDriver("h", 1)
-        assert drv._build_payload("ignored", {"payload": b"\x01\x02"}) == b"\x01\x02"
-
-    def test_build_payload_from_payload_param_str(self):
-        drv = UDPDriver("h", 1)
-        assert drv._build_payload("ignored", {"payload": "hello"}) == b"hello"
-
-    def test_build_payload_bytes_with_value(self):
-        drv = UDPDriver("h", 1)
-        result = drv._build_payload("ignored", {"payload": b"CMD", "value": 5})
-        assert result == b"CMD 5"
-
-    def test_build_payload_str_with_value(self):
-        drv = UDPDriver("h", 1)
-        result = drv._build_payload("ignored", {"command": "CMD", "value": 7})
-        assert result == b"CMD 7"
+        assert _encode("PWR ON") == b"PWR ON"
+        assert _encode(b"\x01\x02") == b"\x01\x02"
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +552,7 @@ class TestMockDriver:
     async def test_execute_not_connected(self):
         drv = MockHardwareDriver(latency_range=(0.0, 0.0))
         with pytest.raises(RuntimeError, match="not connected"):
-            await drv.execute("cmd", {})
+            await drv.execute("set_x", {})
 
     @pytest.mark.asyncio
     async def test_execute_set_command(self):
@@ -594,11 +563,11 @@ class TestMockDriver:
         assert drv.state["power"] is True
 
     @pytest.mark.asyncio
-    async def test_execute_generic_command(self):
+    async def test_execute_foreign_command_not_implemented(self):
         drv = MockHardwareDriver(latency_range=(0.0, 0.0))
         await drv.connect()
-        result = await drv.execute("do_something", {})
-        assert result == {"status": "ok", "result": "mock_success"}
+        with pytest.raises(NotImplementedError):
+            await drv.execute("do_something", {})
 
     @pytest.mark.asyncio
     async def test_execute_failure(self):
@@ -607,8 +576,8 @@ class TestMockDriver:
         # Execute: random=0.1 -> 0.1 < 0.5 is True -> raises.
         with patch("kamio.drivers.mock.random.random", side_effect=[0.9, 0.1]):
             await drv.connect()
-            with pytest.raises(RuntimeError, match="execution of boom failed"):
-                await drv.execute("boom", {})
+            with pytest.raises(RuntimeError, match="execution of set_boom failed"):
+                await drv.execute("set_boom", {})
 
     @pytest.mark.asyncio
     async def test_read_not_connected(self):

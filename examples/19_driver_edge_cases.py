@@ -375,7 +375,7 @@ async def demo_telnet_timeout_returns_ok():
     driver.writer = fake_writer
 
     with pytest.raises(TimeoutError, match="timed out"):
-        await driver.execute("get_status", {"wait_response": True})
+        await driver.execute("request", {"payload": "get_status"})
     print("  execute() при timeout: TimeoutError проброшен")
 
     # ВАЖНО: при timeout соединение закрывается (_read_line вызывает
@@ -390,7 +390,7 @@ async def demo_telnet_timeout_returns_ok():
         # (здесь — снова на фейковые потоки).
         driver.reader = fake_reader
         driver.writer = fake_writer
-        await driver.execute("get_status", {"wait_response": True})
+        await driver.execute("request", {"payload": "get_status"})
     except TimeoutError as e:
         print(f"  ПРАВИЛЬНО: перехвачен TimeoutError: {e}")
 

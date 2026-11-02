@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Union
 
-from .base import BaseDriver
+from .base import BYTE_TRANSPORT_COMMANDS, BaseDriver, require_payload
+
+
+def _encode(payload: Union[str, bytes]) -> bytes:
+    return payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
 
 
 class UDPDriver(BaseDriver):
@@ -11,8 +15,8 @@ class UDPDriver(BaseDriver):
     Asynchronous UDP driver for request/response protocols.
 
     Supports plain send/receive and simple command mapping:
-        execute("set_power", {"value": True, "command": "PWR ON"})
-        read("temperature", {"command": "GET TEMP", "read_bytes": 1024})
+        execute("send", {"payload": "PWR ON"})
+        read("temperature", {"payload": "GET TEMP", "read_bytes": 1024})
 
     Args:
         host: Target host.
@@ -21,14 +25,18 @@ class UDPDriver(BaseDriver):
         local_port: Optional local port to bind; 0 lets the OS choose.
     """
 
+    COMMANDS = BYTE_TRANSPORT_COMMANDS
+
     def __init__(
         self,
         host: str,
         port: int,
         timeout: float = 1.0,
         local_port: int = 0,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -54,41 +62,29 @@ class UDPDriver(BaseDriver):
         self.logger.info("UDP disconnected")
 
     async def execute(self, command_name: str, params: dict) -> Any:
-        """
-        Send a UDP command.
+        """Transport commands: ``send`` (one datagram) / ``request`` (send + await reply).
 
-        payload resolution order:
-            1. params["payload"] / params["command"] (bytes or str)
-            2. command_name + params["value"]
+        ``params["payload"]`` (str/bytes) is the datagram; ``request`` reads up
+        to ``params["read_bytes"]`` (default 1024) bytes.
         """
-        payload = self._build_payload(command_name, params)
+        payload = _encode(require_payload(params, command_name))
         await self._send(payload)
-        if params.get("wait_response", False):
-            return await self._recv(params.get("read_bytes", 1024))
-        return {"status": "ok", "sent": len(payload)}
+        if command_name == "send":
+            return {"status": "ok", "command": "send", "sent": len(payload)}
+        response = await self._recv(params.get("read_bytes", 1024))
+        return {"status": "ok", "command": "request", "response": response}
 
     async def read(self, field_name: str, params: Optional[dict] = None) -> Any:
-        """Send a query datagram and await the response."""
+        """Send ``params["payload"]`` (``""`` = just listen) and await a datagram."""
         params = params or {}
-        payload = self._build_payload(field_name, params)
-        if payload:
-            await self._send(payload)
-        data = await self._recv(params.get("read_bytes", 1024))
-        return {"status": "ok", "field": field_name, "data": data}
-
-    def _build_payload(self, command_name: str, params: dict) -> bytes:
-        raw = params.get("payload") or params.get("command") or command_name
-        if not isinstance(raw, bytes):
-            raw = str(raw)
-            value = params.get("value")
-            if value is not None:
-                raw += f" {value}"
-            raw = raw.encode("utf-8")
-        else:
-            value = params.get("value")
-            if value is not None:
-                raw += f" {value}".encode("utf-8")
-        return raw
+        payload = params.get("payload")
+        if payload is None:
+            raise NotImplementedError("UDPDriver.read requires params['payload']")
+        data = _encode(payload)
+        if data:
+            await self._send(data)
+        response = await self._recv(params.get("read_bytes", 1024))
+        return {"status": "ok", "field": field_name, "data": response}
 
     async def _send(self, payload: bytes) -> None:
         if self._transport is None:

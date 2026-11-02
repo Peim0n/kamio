@@ -366,7 +366,7 @@ async def test_mock_driver():
     await driver.connect()
     assert driver.connected == True
 
-    result = await driver.execute("test_command", {"param": 1})
+    result = await driver.execute("set_param", {"value": 1})
     assert isinstance(result, dict)
     logger.info(f"  ✓ execute вернул: {result}")
 

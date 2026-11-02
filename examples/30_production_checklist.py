@@ -225,7 +225,7 @@ async def check_drivers() -> None:
     await driver.connect()
     check("MockDriver connect OK", driver.connected)
 
-    result = await driver.execute("test", {})
+    result = await driver.execute("set_test", {"value": 1})
     check("MockDriver execute возвращает dict", isinstance(result, dict))
 
     await driver.disconnect()

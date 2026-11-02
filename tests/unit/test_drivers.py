@@ -48,7 +48,7 @@ async def test_serial_read_returns_dict():
     fake_ser.read.return_value = b"ok\n"
     driver.ser = fake_ser
 
-    result = await driver.read("temp", {"command": "GET TEMP", "wait_response": True})
+    result = await driver.read("temp", {"payload": "GET TEMP"})
     assert result["status"] == "ok"
     assert result["field"] == "temp"
     assert result["response"] == "ok"
@@ -56,13 +56,14 @@ async def test_serial_read_returns_dict():
 
 
 @pytest.mark.asyncio
-async def test_serial_read_without_response():
+async def test_serial_read_without_payload_not_implemented():
     driver = SerialDriver(port="/dev/null")
     fake_ser = MagicMock()
     driver.ser = fake_ser
 
-    result = await driver.read("temp", {"wait_response": False})
-    assert result["response"] == ""
+    with pytest.raises(NotImplementedError, match="payload"):
+        await driver.read("temp")
+    fake_ser.write.assert_not_called()
     fake_ser.read.assert_not_called()
 
 
@@ -73,28 +74,40 @@ async def test_serial_read_empty_command_skips_write():
     fake_ser.read.return_value = b"data\n"
     driver.ser = fake_ser
 
-    result = await driver.read("temp", {"command": "", "value": 1})
+    result = await driver.read("temp", {"payload": ""})
     fake_ser.write.assert_not_called()
     assert result["response"] == "data"
 
 
 @pytest.mark.asyncio
-async def test_serial_execute_with_value():
+async def test_serial_execute_request():
     driver = SerialDriver(port="/dev/null")
     fake_ser = MagicMock()
     fake_ser.read.return_value = b"OK\n"
     driver.ser = fake_ser
 
-    result = await driver.execute("send", {"command": "SET", "value": 42})
+    result = await driver.execute("request", {"payload": "SET 42"})
     fake_ser.write.assert_called_once_with(b"SET 42")
-    assert result == {"status": "ok", "command": "send", "response": "OK"}
+    assert result == {"status": "ok", "command": "request", "response": "OK"}
+
+
+@pytest.mark.asyncio
+async def test_serial_send_does_not_read():
+    driver = SerialDriver(port="/dev/null")
+    fake_ser = MagicMock()
+    driver.ser = fake_ser
+
+    result = await driver.execute("send", {"payload": b"\x02PING\x03"})
+    fake_ser.write.assert_called_once_with(b"\x02PING\x03")
+    fake_ser.read.assert_not_called()
+    assert result == {"status": "ok", "command": "send"}
 
 
 @pytest.mark.asyncio
 async def test_serial_read_raises_when_not_connected():
     driver = SerialDriver(port="/dev/null")
-    with pytest.raises(RuntimeError):
-        await driver.read("temp")
+    with pytest.raises(RuntimeError, match="not connected"):
+        await driver.read("temp", {"payload": "GET TEMP"})
 
 
 @pytest.mark.asyncio
@@ -190,7 +203,9 @@ async def test_http_read_raises_on_http_error():
 @pytest.mark.asyncio
 async def test_http_read_raises_when_not_connected():
     driver = HTTPDeviceDriver(base_url="http://example.com")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="not connected"):
+        await driver.read("temp", {"path": "/sensor"})
+    with pytest.raises(NotImplementedError, match="path"):
         await driver.read("temp")
 
 
@@ -201,12 +216,18 @@ async def test_http_execute_post():
     session = _FakeSession(resp)
     driver.session = session
 
-    result = await driver.execute(
-        "set", {"path": "/actuator", "method": "POST", "value": {"on": True}}
-    )
+    result = await driver.execute("post", {"path": "/actuator", "json": {"on": True}})
     assert result["status"] == "ok"
-    assert session.requests[0][0] == "POST"
+    assert session.requests[0][:2] == ("POST", "http://example.com/actuator")
     assert session.requests[0][2]["json"] == {"on": True}
+
+    await driver.execute("request", {"method": "put", "path": "/x"})
+    assert session.requests[1][0] == "PUT"
+    with pytest.raises(ValueError, match="method"):
+        await driver.execute("request", {"path": "/x"})
+    with pytest.raises(NotImplementedError):
+        await driver.execute("set_power", {"value": True})
+    assert len(session.requests) == 2
 
 
 # ---------------------------------------------------------------------------

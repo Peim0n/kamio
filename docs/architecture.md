@@ -263,8 +263,22 @@ async def read(field_name, params=None)              # read a value
 ```
 
 If a device has a `driver`, `handle_command` and `handle_state` first try to execute through it.
-The driver receives `command_name` and `params` (including `value`), allowing a unified `set_<field>` protocol or passing a command via `params["command"]`.
-`NotImplementedError` in `execute` — fallback to the device method.
+A driver is a pure transport: it owns a fixed set of transport commands (`COMMANDS`, `fnmatch` patterns) and does the framing, sending, reading and splitting of replies itself. What to send (`"PWR ON"`, a register address) is device semantics and lives in the device's `@command` methods, which call the driver's transport commands.
+`NotImplementedError` in `execute` — fallback to the device `@command` method (or, for `set_<field>`, the in-memory state update). Any other exception means the driver owns the command and it failed: `handle_command` re-raises it, `handle_state` skips the field.
+
+The contract is enforced by `BaseDriver` itself: every subclass `execute` is wrapped so that a command rejected by `supports_command()` raises `NotImplementedError` before the subclass body runs.
+
+| Driver | Transport commands | `read()` needs |
+|---|---|---|
+| `TelnetDriver` | `send` (write line), `request` (write line + read line) — `params["payload"]`; newline added by the driver | `params["payload"]` (`""` = pure read) |
+| `SerialDriver` | `send`, `request` — `params["payload"]` written as-is, reply = one bounded line | `params["payload"]` |
+| `UDPDriver` | `send` (one datagram), `request` (send + await reply, `read_bytes`) — `params["payload"]` | `params["payload"]` (`""` = just listen) |
+| `HTTPDeviceDriver` | `get`/`post`/`put`/`patch`/`delete`, `request` (+`params["method"]`) — `path`, `json`, `data` | `params["path"]` |
+| `ModbusTCPDriver` | `write_coil` / `write_register` / `write_registers` (+ aliases, optionally `set_`-prefixed) | — |
+| `GPIOChipDriver` | `set_output` | `params["pin"]` |
+| `MockHardwareDriver` | `set_<field>` (simulated registers) | — |
+
+Missing addressing params in `read()` raise `NotImplementedError` too, so a bare telemetry read falls back to the device attribute. Custom drivers default to `COMMANDS = ("*",)`; declare a narrower `COMMANDS` to opt into the fallback. Every driver accepts `commands=` to narrow its set further per instance.
 
 ## Asynchrony
 

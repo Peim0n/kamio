@@ -1350,9 +1350,17 @@ class BaseDriver(ABC):
     Defines the interface for hardware interaction.
     """
     
-    def __init__(self):
-        """Driver initialization."""
-        self.logger = logging.getLogger(f"Kamio.driver.{self.__class__.__name__}")
+    COMMANDS: ClassVar[Tuple[str, ...]] = ("*",)  # fnmatch patterns owned by the driver
+
+    def __init__(self, commands: Optional[Iterable[str]] = None):
+        """
+        Parameters:
+            commands: Optional per-instance allowlist (fnmatch patterns) that
+                      narrows COMMANDS further. None — no extra restriction.
+        """
+
+    def supports_command(self, command_name: str) -> bool:
+        """True if command_name matches COMMANDS and the `commands` allowlist."""
     
     @abstractmethod
     async def connect(self) -> None:
@@ -1381,6 +1389,12 @@ class BaseDriver(ABC):
         
         Returns:
             Command execution result
+
+        Raises:
+            NotImplementedError: the command is not this driver's — the device
+                falls back to its @command method / in-memory state. Raised
+                automatically (before the subclass body) when
+                supports_command() returns False.
         """
         pass
 
@@ -1410,6 +1424,23 @@ class BaseDriver(ABC):
 
 ### Implemented Drivers:
 
+Every stock driver declares a fixed `COMMANDS` set of transport commands and raises `NotImplementedError` for anything else, so device commands always reach the device's `@command` / in-memory state (see the table in `docs/architecture.md`). Payload framing, sending and reply splitting are the driver's job; the device decides *what* to send:
+
+```python
+class Projector(Device):
+    power: bool = state(default=False, writable=True)
+
+    @command
+    async def set_power(self, value: bool):
+        reply = await self.driver.execute("request", {"payload": "PWR ON" if value else "PWR OFF"})
+        self.power = value
+        return reply["response"]
+
+Projector(driver=TelnetDriver("10.0.0.5"))
+```
+
+`commands=` (keyword-only) narrows `COMMANDS` per instance.
+
 #### `MockHardwareDriver`
 Mock driver for testing and development.
 
@@ -1417,7 +1448,8 @@ Mock driver for testing and development.
 class MockHardwareDriver(BaseDriver):
     def __init__(self, latency_range: tuple = (0.01, 0.1),
                  failure_rate: float = 0.0,
-                 initial_state: Optional[Dict[str, Any]] = None):
+                 initial_state: Optional[Dict[str, Any]] = None,
+                 *, commands: Optional[Iterable[str]] = None):
         """
         Parameters:
             latency_range: Latency range in seconds (min, max)
@@ -1431,7 +1463,8 @@ Driver for working with GPIO chips (requires `gpiod`).
 
 ```python
 class GPIOChipDriver(BaseDriver):
-    def __init__(self, chip_path: str = "/dev/gpiochip4"):
+    def __init__(self, chip_path: str = "/dev/gpiochip4", *,
+                 commands: Optional[Iterable[str]] = None):
         """
         Parameters:
             chip_path: Path to the GPIO chip
@@ -1444,7 +1477,8 @@ Driver for interacting with devices via Telnet.
 ```python
 class TelnetDriver(BaseDriver):
     def __init__(self, host: str, port: int = 23, timeout: float = 5.0,
-                 max_reconnect_attempts: int = 3):
+                 max_reconnect_attempts: int = 3, *,
+                 commands: Optional[Iterable[str]] = None):
         """
         Parameters:
             host: Host address
@@ -1459,7 +1493,9 @@ Driver for working with serial ports (requires `pyserial`).
 
 ```python
 class SerialDriver(BaseDriver):
-    def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0):
+    def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0,
+                 read_limit: int = READ_LIMIT, *,
+                 commands: Optional[Iterable[str]] = None):
         """
         Parameters:
             port: Port (e.g., "/dev/ttyUSB0" or "COM3")
@@ -1474,7 +1510,8 @@ Driver for interacting with HTTP/RESTful API (requires `aiohttp`).
 ```python
 class HTTPDeviceDriver(BaseDriver):
     def __init__(self, base_url: str, headers: Optional[Dict[str, str]] = None,
-                 timeout: float = 10.0):
+                 timeout: float = 10.0, *,
+                 commands: Optional[Iterable[str]] = None):
         """
         Parameters:
             base_url: API base URL
@@ -1488,7 +1525,8 @@ Driver for UDP protocols (request/response or plain send).
 
 ```python
 class UDPDriver(BaseDriver):
-    def __init__(self, host: str, port: int, timeout: float = 1.0, local_port: int = 0):
+    def __init__(self, host: str, port: int, timeout: float = 1.0, local_port: int = 0,
+                 *, commands: Optional[Iterable[str]] = None):
         """
         Parameters:
             host:        Target host
@@ -1498,16 +1536,20 @@ class UDPDriver(BaseDriver):
         """
 ```
 
-`execute(command_name, params)` sends `command_name` (or `params["command"]`, or `params["payload"]`).
-If `params["wait_response"] == True`, returns received bytes.
-`read(field_name, params)` sends `params["command"]` (or `field_name`) and returns the response.
+`execute("send", {"payload": ...})` sends one datagram → `{"status": "ok", "command": "send", "sent": n}`.
+`execute("request", {"payload": ..., "read_bytes": 1024})` sends and awaits the reply → `{"status": "ok", "command": "request", "response": bytes}`.
+`read(field_name, {"payload": ...})` sends the payload (`""` = just listen) and returns `{"status": "ok", "field": ..., "data": bytes}`; without `payload` it raises `NotImplementedError`.
+
+`TelnetDriver` and `SerialDriver` use the same `send` / `request` / `read(..., {"payload": ...})` contract with line-based replies (`"response"`: str); `TelnetDriver` appends the trailing newline. `HTTPDeviceDriver` owns `get`/`post`/`put`/`patch`/`delete` and `request` (+`method`), with `path`, `json`, `data`; `read()` requires `path`.
 
 #### `ModbusTCPDriver`
 Driver for Modbus TCP (pure asyncio, no external dependencies).
 
 ```python
 class ModbusTCPDriver(BaseDriver):
-    def __init__(self, host: str, port: int = 502, unit_id: int = 1, timeout: float = 1.0):
+    def __init__(self, host: str, port: int = 502, unit_id: int = 1, timeout: float = 1.0,
+                 reconnect_attempts: int = 1, *,
+                 commands: Optional[Iterable[str]] = None):
         """
         Parameters:
             host:     Modbus gateway address
@@ -1521,6 +1563,8 @@ Supported `execute` commands:
 - `write_coil` / `coil` — `params["address"]`, `params["value"]` (bool)
 - `write_register` / `register` — `params["address"]`, `params["value"]` (int)
 - `write_registers` / `registers` — `params["address"]`, `params["values"]`
+
+Each may be `set_`-prefixed (`set_coil`, …). Any other command raises `NotImplementedError`, so the device's `@command` / in-memory state handles it.
 
 `read(field_name, params)` uses `params["command"]`: `coil`, `discrete`, `holding`, `input` and `address`, `count`.
 

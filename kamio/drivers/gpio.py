@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 try:
     import gpiod
@@ -20,8 +20,12 @@ class GPIOChipDriver(BaseDriver):
     avoid blocking the event loop.
     """
 
-    def __init__(self, chip_path: str = "/dev/gpiochip4"):
-        super().__init__()
+    COMMANDS = ("set_output",)
+
+    def __init__(
+        self, chip_path: str = "/dev/gpiochip4", *, commands: Optional[Iterable[str]] = None
+    ):
+        super().__init__(commands=commands)
         self.chip_path = chip_path
         self.chip: Optional[Any] = None
         self.lines: Dict[int, Any] = {}
@@ -60,8 +64,10 @@ class GPIOChipDriver(BaseDriver):
         """Read the current value of a GPIO line by field name."""
         params = params or {}
         pin = params.get("pin")
+        if pin is None:
+            raise NotImplementedError("GPIO read requires params['pin']")
         if not isinstance(pin, int):
-            raise ValueError("'pin' is required for GPIO read and must be an int")
+            raise ValueError("'pin' must be an int")
         if not self.chip:
             raise RuntimeError("GPIO chip not connected")
         line = await self._get_line(pin, direction="input")
@@ -83,7 +89,9 @@ class GPIOChipDriver(BaseDriver):
             await asyncio.to_thread(line.set_value, 1 if value else 0)
             return {"status": "ok", "pin": pin, "value": value}
 
-        raise NotImplementedError(f"Command {command_name} not supported")
+        raise NotImplementedError(  # pragma: no cover - rejected by supports_command
+            f"Command {command_name} not supported"
+        )
 
     async def _get_line(self, pin: int, direction: str = "input"):
         """Resolve (and cache) a GPIO line, offloading sysfs/ioctl calls to a thread."""
