@@ -1350,18 +1350,17 @@ class BaseDriver(ABC):
     Defines the interface for hardware interaction.
     """
     
+    COMMANDS: ClassVar[Tuple[str, ...]] = ("*",)  # fnmatch patterns owned by the driver
+
     def __init__(self, commands: Optional[Iterable[str]] = None):
         """
         Parameters:
-            commands: Optional allowlist of command names (fnmatch patterns,
-                      e.g. ["set_*"]). None — no extra restriction.
+            commands: Optional per-instance allowlist (fnmatch patterns) that
+                      narrows COMMANDS further. None — no extra restriction.
         """
 
     def supports_command(self, command_name: str) -> bool:
-        """
-        True if execute() handles command_name. Base: checks `commands`.
-        Drivers with a fixed command set extend it and call super().
-        """
+        """True if command_name matches COMMANDS and the `commands` allowlist."""
     
     @abstractmethod
     async def connect(self) -> None:
@@ -1425,7 +1424,22 @@ class BaseDriver(ABC):
 
 ### Implemented Drivers:
 
-Every stock driver accepts a keyword-only `commands=` allowlist. `TelnetDriver`, `SerialDriver`, `UDPDriver`, `HTTPDeviceDriver` and `MockHardwareDriver` pass every command to the wire unless `commands=` is given; `ModbusTCPDriver` and `GPIOChipDriver` own only their fixed write commands and raise `NotImplementedError` for anything else.
+Every stock driver declares a fixed `COMMANDS` set of transport commands and raises `NotImplementedError` for anything else, so device commands always reach the device's `@command` / in-memory state (see the table in `docs/architecture.md`). Payload framing, sending and reply splitting are the driver's job; the device decides *what* to send:
+
+```python
+class Projector(Device):
+    power: bool = state(default=False, writable=True)
+
+    @command
+    async def set_power(self, value: bool):
+        reply = await self.driver.execute("request", {"payload": "PWR ON" if value else "PWR OFF"})
+        self.power = value
+        return reply["response"]
+
+Projector(driver=TelnetDriver("10.0.0.5"))
+```
+
+`commands=` (keyword-only) narrows `COMMANDS` per instance.
 
 #### `MockHardwareDriver`
 Mock driver for testing and development.
@@ -1522,9 +1536,11 @@ class UDPDriver(BaseDriver):
         """
 ```
 
-`execute(command_name, params)` sends `command_name` (or `params["command"]`, or `params["payload"]`).
-If `params["wait_response"] == True`, returns received bytes.
-`read(field_name, params)` sends `params["command"]` (or `field_name`) and returns the response.
+`execute("send", {"payload": ...})` sends one datagram → `{"status": "ok", "command": "send", "sent": n}`.
+`execute("request", {"payload": ..., "read_bytes": 1024})` sends and awaits the reply → `{"status": "ok", "command": "request", "response": bytes}`.
+`read(field_name, {"payload": ...})` sends the payload (`""` = just listen) and returns `{"status": "ok", "field": ..., "data": bytes}`; without `payload` it raises `NotImplementedError`.
+
+`TelnetDriver` and `SerialDriver` use the same `send` / `request` / `read(..., {"payload": ...})` contract with line-based replies (`"response"`: str); `TelnetDriver` appends the trailing newline. `HTTPDeviceDriver` owns `get`/`post`/`put`/`patch`/`delete` and `request` (+`method`), with `path`, `json`, `data`; `read()` requires `path`.
 
 #### `ModbusTCPDriver`
 Driver for Modbus TCP (pure asyncio, no external dependencies).

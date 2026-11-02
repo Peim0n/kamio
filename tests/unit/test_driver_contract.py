@@ -130,43 +130,77 @@ async def test_gpio_own_command_still_validates():
         await drv.execute("set_output", {"pin": 1})
 
 
-@pytest.mark.parametrize(
-    "factory",
-    [
-        lambda **kw: TelnetDriver("127.0.0.1", **kw),
-        lambda **kw: SerialDriver("/dev/null", **kw),
-        lambda **kw: UDPDriver("127.0.0.1", 1, **kw),
-        lambda **kw: HTTPDeviceDriver("http://localhost", **kw),
-        lambda **kw: MockHardwareDriver(**kw),
-    ],
-)
-def test_transport_drivers_pass_through_unless_restricted(factory):
-    assert factory().supports_command("reset")
-    restricted = factory(commands=["set_*"])
-    assert restricted.supports_command("set_power")
-    assert not restricted.supports_command("reset")
+_STOCK = [
+    (lambda **kw: TelnetDriver("127.0.0.1", **kw), ("send", "request")),
+    (lambda **kw: SerialDriver("/dev/null", **kw), ("send", "request")),
+    (lambda **kw: UDPDriver("127.0.0.1", 1, **kw), ("send", "request")),
+    (lambda **kw: HTTPDeviceDriver("http://localhost", **kw), ("request", "get", "post")),
+    (lambda **kw: MockHardwareDriver(**kw), ("set_power",)),
+    (lambda **kw: ModbusTCPDriver("127.0.0.1", 1, **kw), ("write_coil", "set_coil")),
+    (lambda **kw: GPIOChipDriver(**kw), ("set_output",)),
+]
+
+
+@pytest.mark.parametrize("factory, owned", _STOCK)
+def test_every_stock_driver_owns_only_its_transport_commands(factory, owned):
+    drv = factory()
+    for name in owned:
+        assert drv.supports_command(name)
+    for name in ("reset", "emergency_stop", "PWR ON"):
+        assert not drv.supports_command(name)
+    assert not factory(commands=[]).supports_command(owned[0])
 
 
 @pytest.mark.asyncio
-async def test_telnet_allowlist_routes_foreign_commands_to_device():
+@pytest.mark.parametrize(
+    "drv",
+    [
+        TelnetDriver("127.0.0.1", 1),
+        SerialDriver("/dev/null"),
+        UDPDriver("127.0.0.1", 1),
+        HTTPDeviceDriver("http://localhost"),
+        MockHardwareDriver(latency_range=(0, 0)),
+    ],
+)
+async def test_device_command_never_reaches_the_wire(drv):
+    # Not connected: any attempt to talk to the transport would raise.
+    dev = _Dev(driver=drv)
+    assert await dev.handle_command("reset", {}) == "device-reset"
+    if not isinstance(drv, MockHardwareDriver):
+        assert await dev.handle_state({"power": True}) == {"power": True}
+        assert dev.power is True
+
+
+class _TelnetDev(Device):
+    power: bool = state(default=False, writable=True)
+
+    @command
+    async def set_power(self, value):
+        reply = await self.driver.execute("request", {"payload": f"PWR {'ON' if value else 'OFF'}"})
+        self.power = bool(value)
+        return reply["response"]
+
+
+@pytest.mark.asyncio
+async def test_device_builds_payload_transport_frames_it():
     lines = []
 
     async def handler(reader, writer):
         while line := await reader.readline():
             lines.append(line)
-            writer.write(b"OK\n")
+            writer.write(b"OK\r\n")
             await writer.drain()
         writer.close()
 
     server = await asyncio.start_server(handler, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    drv = TelnetDriver("127.0.0.1", port, commands=["set_*"])
+    drv = TelnetDriver("127.0.0.1", port)
     await drv.connect()
     try:
-        dev = _Dev(driver=drv)
-        assert await dev.handle_command("reset", {}) == "device-reset"
-        assert await dev.handle_state({"power": True}) == {"power": True}
-        assert lines == [b"set_power True\n"]
+        dev = _TelnetDev(driver=drv)
+        assert await dev.handle_command("set_power", {"value": True}) == "OK"
+        assert dev.power is True
+        assert lines == [b"PWR ON\n"]
     finally:
         await drv.disconnect()
         server.close()

@@ -4,7 +4,18 @@ import functools
 import logging
 from abc import ABC, abstractmethod
 from fnmatch import fnmatchcase
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, ClassVar, Dict, Iterable, Optional, Tuple
+
+#: Transport commands shared by byte-stream drivers (Telnet, Serial, UDP).
+BYTE_TRANSPORT_COMMANDS: Tuple[str, ...] = ("send", "request")
+
+
+def require_payload(params: Optional[Dict[str, Any]], command_name: str) -> Any:
+    """Return ``params["payload"]`` or raise ``ValueError`` naming the command."""
+    payload = (params or {}).get("payload")
+    if payload is None:
+        raise ValueError(f"{command_name!r} requires params['payload'] (str or bytes)")
+    return payload
 
 
 class BaseDriver(ABC):
@@ -12,18 +23,25 @@ class BaseDriver(ABC):
     Base driver class for Kamio Core.
     Handles low-level hardware interaction.
 
-    Dispatch contract: ``Device.handle_command`` / ``Device.handle_state`` call
-    :meth:`execute` first and fall back to the device's ``@command`` method or
-    in-memory state **only** when it raises :class:`NotImplementedError`.
-    Every subclass ``execute`` is wrapped so that a command rejected by
-    :meth:`supports_command` raises ``NotImplementedError`` before the
-    subclass body runs.
+    Dispatch contract (identical for every driver): ``Device.handle_command`` /
+    ``Device.handle_state`` call :meth:`execute` first and fall back to the
+    device's ``@command`` method or in-memory state **only** when it raises
+    :class:`NotImplementedError`.  A driver owns a fixed set of transport
+    commands, declared in :attr:`COMMANDS`; device semantics (what to send,
+    how to interpret the reply) belong to the device.  Every subclass
+    ``execute`` is wrapped so a command rejected by :meth:`supports_command`
+    raises ``NotImplementedError`` before the subclass body runs.
+
+    Likewise :meth:`read` raises ``NotImplementedError`` when called without
+    the addressing parameters the driver needs (e.g. a bare telemetry read).
 
     Args:
-        commands: Optional allowlist of command names (``fnmatch`` patterns
-            such as ``"set_*"`` are accepted).  ``None`` means the driver
-            accepts every command its own :meth:`supports_command` accepts.
+        commands: Optional allowlist (``fnmatch`` patterns) that further
+            narrows :attr:`COMMANDS` for this instance.
     """
+
+    #: ``fnmatch`` patterns of the commands this driver owns.
+    COMMANDS: ClassVar[Tuple[str, ...]] = ("*",)
 
     def __init__(self, commands: Optional[Iterable[str]] = None):
         self.logger = logging.getLogger(f"Kamio.driver.{self.__class__.__name__}")
@@ -51,11 +69,9 @@ class BaseDriver(ABC):
         setattr(cls, "execute", _contract_execute)
 
     def supports_command(self, command_name: str) -> bool:
-        """Return True if :meth:`execute` handles ``command_name``.
-
-        The base implementation checks the ``commands`` allowlist; subclasses
-        with a fixed command set should extend it (and call ``super()``).
-        """
+        """Return True if ``command_name`` matches :attr:`COMMANDS` and ``commands``."""
+        if not any(fnmatchcase(command_name, pattern) for pattern in self.COMMANDS):
+            return False
         if self.commands is None:
             return True
         return any(fnmatchcase(command_name, pattern) for pattern in self.commands)

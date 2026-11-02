@@ -43,6 +43,8 @@ class ModbusTCPDriver(BaseDriver):
         timeout: Connection/response timeout.
     """
 
+    COMMANDS = tuple(sorted(_WRITE_COMMANDS | {f"set_{c}" for c in _WRITE_COMMANDS}))
+
     def __init__(
         self,
         host: str,
@@ -117,12 +119,6 @@ class ModbusTCPDriver(BaseDriver):
 
         result = await self._read_type(command_type, address, count)
         return {"status": "ok", "field": field_name, "address": address, "data": result}
-
-    def supports_command(self, command_name: str) -> bool:
-        """Only Modbus write commands (optionally ``set_``-prefixed) belong to this driver."""
-        if command_name.removeprefix("set_") not in _WRITE_COMMANDS:
-            return False
-        return super().supports_command(command_name)
 
     async def execute(self, command_name: str, params: dict) -> Any:
         """

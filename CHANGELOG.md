@@ -6,7 +6,12 @@ All notable changes to Kamio will be documented in this file.
 
 ### Changed
 - **Driver dispatch contract enforced by `BaseDriver`** — every subclass `execute` is wrapped so a command rejected by the new `supports_command()` raises `NotImplementedError` before the subclass body runs; `Device.handle_command` / `handle_state` then fall back to the `@command` method / in-memory state as documented. Custom drivers get this automatically.
-- **`commands=` allowlist on every stock driver** (keyword-only, `fnmatch` patterns, e.g. `commands=["set_*"]`). Telnet/Serial/UDP/HTTP/Mock still pass every command through when it is omitted.
+- **One transport contract for every driver** — each driver declares a fixed `COMMANDS` set; everything else raises `NotImplementedError`. There is no pass-through mode: device semantics live in `@command`, framing/splitting in the driver. **Breaking:**
+  - `TelnetDriver` / `SerialDriver` / `UDPDriver`: only `send` / `request` with `params["payload"]` (`params["command"]`, `value` concatenation and `wait_response` are gone); `read()` requires `params["payload"]`. UDP `request` returns `{"status", "command", "response"}` instead of raw bytes.
+  - `HTTPDeviceDriver`: only `get`/`post`/`put`/`patch`/`delete`/`request` (+`method`); the command name is no longer used as URL path, `value` is no longer sent as JSON; `read()` requires `params["path"]`.
+  - `MockHardwareDriver`: only `set_<field>`; other commands no longer return `mock_success`.
+  - `GPIOChipDriver.read()` without `pin` raises `NotImplementedError` (was `ValueError`).
+- **`commands=` allowlist on every driver** (keyword-only, `fnmatch` patterns) narrows `COMMANDS` per instance.
 
 ### Fixed
 - **`ModbusTCPDriver`** — unknown commands raised `ValueError`, so device `@command`s (all four in `examples/11_modbus_device.py`) and `handle_state` never ran; they now raise `NotImplementedError`. `set_` prefix is stripped with `removeprefix` instead of `replace`.

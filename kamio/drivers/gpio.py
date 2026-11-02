@@ -20,6 +20,8 @@ class GPIOChipDriver(BaseDriver):
     avoid blocking the event loop.
     """
 
+    COMMANDS = ("set_output",)
+
     def __init__(
         self, chip_path: str = "/dev/gpiochip4", *, commands: Optional[Iterable[str]] = None
     ):
@@ -62,19 +64,15 @@ class GPIOChipDriver(BaseDriver):
         """Read the current value of a GPIO line by field name."""
         params = params or {}
         pin = params.get("pin")
+        if pin is None:
+            raise NotImplementedError("GPIO read requires params['pin']")
         if not isinstance(pin, int):
-            raise ValueError("'pin' is required for GPIO read and must be an int")
+            raise ValueError("'pin' must be an int")
         if not self.chip:
             raise RuntimeError("GPIO chip not connected")
         line = await self._get_line(pin, direction="input")
         value = await asyncio.to_thread(line.get_value)
         return {"status": "ok", "pin": pin, "value": value}
-
-    def supports_command(self, command_name: str) -> bool:
-        """Only ``set_output`` belongs to this driver."""
-        if command_name != "set_output":
-            return False
-        return super().supports_command(command_name)
 
     async def execute(self, command_name: str, params: dict) -> dict:
         """Execute a write command on a GPIO line (set high/low)."""

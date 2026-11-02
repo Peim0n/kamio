@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Union
 
 try:
     import serial
 except ImportError:
     serial = None
 
-from .base import BaseDriver
+from .base import BYTE_TRANSPORT_COMMANDS, BaseDriver, require_payload
 
 
 def _readline_bounded(ser, limit: int) -> bytes:
@@ -38,6 +38,10 @@ def _readline_bounded(ser, limit: int) -> bytes:
     return bytes(buf)
 
 
+def _encode(payload: Union[str, bytes]) -> bytes:
+    return payload.encode() if isinstance(payload, str) else bytes(payload)
+
+
 class SerialDriver(BaseDriver):
     """
     Serial driver (RS-232/RS-485) using pyserial.
@@ -52,6 +56,8 @@ class SerialDriver(BaseDriver):
     cancelled — task cancellation only detaches the awaiting coroutine;
     the thread finishes on its own. Set short serial timeouts accordingly.
     """
+
+    COMMANDS = BYTE_TRANSPORT_COMMANDS
 
     #: Maximum number of bytes a single readline-style read may accumulate.
     READ_LIMIT = 4096
@@ -100,38 +106,30 @@ class SerialDriver(BaseDriver):
                 self.logger.info("Serial port closed")
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        """Send a query command and read the response from the serial port."""
-        params = params or {}
-        response = await self._transact(self._build_payload(field_name, params), params)
+        """Write ``params["payload"]`` (``""`` = pure read) and read one bounded line."""
+        payload = (params or {}).get("payload")
+        if payload is None:
+            raise NotImplementedError("SerialDriver.read requires params['payload']")
+        response = await self._transact(_encode(payload), wait_response=True)
         return {"status": "ok", "field": field_name, "response": response}
 
     async def execute(self, command_name: str, params: dict) -> dict:
-        """Send a command to the serial device and optionally read a response."""
-        params = params or {}
-        response = await self._transact(self._build_payload(command_name, params), params)
-        return {"status": "ok", "command": command_name, "response": response}
+        """Transport commands: ``send`` (write) / ``request`` (write + read one line).
 
-    @staticmethod
-    def _build_payload(name: str, params: Dict[str, Any]) -> bytes:
-        """Resolve ``params["command"]`` (default ``name``) plus optional ``value`` to bytes.
-
-        An empty command yields ``b""`` and is never written, so callers can
-        perform a pure read by passing ``{"command": ""}``.
+        ``params["payload"]`` (str/bytes) is written as-is.
         """
-        data = params.get("command", name)
-        if not data:
-            return b""
-        value = params.get("value")
-        if value is not None:
-            data = f"{data} {value}"
-        return data.encode() if isinstance(data, str) else data
+        payload = _encode(require_payload(params, command_name))
+        if command_name == "send":
+            await self._transact(payload, wait_response=False)
+            return {"status": "ok", "command": "send"}
+        response = await self._transact(payload, wait_response=True)
+        return {"status": "ok", "command": "request", "response": response}
 
-    async def _transact(self, payload: bytes, params: Dict[str, Any]) -> str:
+    async def _transact(self, payload: bytes, wait_response: bool) -> str:
         """Write ``payload`` (if non-empty) and optionally read one bounded line."""
         ser = self.ser
         if not ser:
             raise RuntimeError("Serial port not connected")
-        wait_response = params.get("wait_response", True)
 
         def _write_read() -> str:
             if payload:

@@ -116,8 +116,10 @@ async def test_gpio_read_requires_pin(fake_gpiod):
 
     drv = GPIOChipDriver(chip_path="/dev/gpiochip0")
     await drv.connect()
-    with pytest.raises(ValueError):
+    with pytest.raises(NotImplementedError):
         await drv.read("pin0", {})
+    with pytest.raises(ValueError):
+        await drv.read("pin0", {"pin": "1"})
     await drv.disconnect()
 
 
@@ -277,7 +279,7 @@ async def test_serial_read(fake_serial):
 
     drv = SerialDriver(port="/dev/ttyUSB0")
     await drv.connect()
-    result = await drv.read("temp", {"command": "GET TEMP"})
+    result = await drv.read("temp", {"payload": "GET TEMP"})
     assert result["status"] == "ok"
     assert result["field"] == "temp"
     await drv.disconnect()
@@ -289,7 +291,7 @@ async def test_serial_read_not_connected(fake_serial):
 
     drv = SerialDriver(port="/dev/ttyUSB0")
     with pytest.raises(RuntimeError):
-        await drv.read("temp", {})
+        await drv.read("temp", {"payload": "GET TEMP"})
 
 
 @pytest.mark.asyncio
@@ -298,9 +300,9 @@ async def test_serial_execute(fake_serial):
 
     drv = SerialDriver(port="/dev/ttyUSB0")
     await drv.connect()
-    result = await drv.execute("send", {"command": "GET", "value": "TEMP"})
+    result = await drv.execute("request", {"payload": "GET TEMP"})
     assert result["status"] == "ok"
-    assert result["command"] == "send"
+    assert result["command"] == "request"
     await drv.disconnect()
 
 
@@ -310,7 +312,7 @@ async def test_serial_execute_not_connected(fake_serial):
 
     drv = SerialDriver(port="/dev/ttyUSB0")
     with pytest.raises(RuntimeError):
-        await drv.execute("send", {"command": "GET"})
+        await drv.execute("send", {"payload": "GET"})
 
 
 @pytest.mark.asyncio
@@ -319,8 +321,8 @@ async def test_serial_execute_no_response(fake_serial):
 
     drv = SerialDriver(port="/dev/ttyUSB0")
     await drv.connect()
-    result = await drv.execute("send", {"command": "PING", "wait_response": False})
-    assert result["response"] == ""
+    result = await drv.execute("send", {"payload": "PING"})
+    assert result == {"status": "ok", "command": "send"}
     await drv.disconnect()
 
 

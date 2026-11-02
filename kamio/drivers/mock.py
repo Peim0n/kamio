@@ -20,6 +20,8 @@ class MockHardwareDriver(BaseDriver):
                         by ``execute("set_<field>", ...)``.
     """
 
+    COMMANDS = ("set_*",)
+
     def __init__(
         self,
         latency_range: tuple = (0.01, 0.1),
@@ -59,13 +61,9 @@ class MockHardwareDriver(BaseDriver):
 
         self.logger.debug(f"Mock executing {command_name} with {params}")
 
-        # Simple logic for mock state updates
-        if command_name.startswith("set_"):
-            field = command_name[4:]
-            self.state[field] = params.get("value")
-            return {"status": "ok", "field": field, "value": self.state[field]}
-
-        return {"status": "ok", "result": "mock_success"}
+        field = command_name[4:]
+        self.state[field] = params.get("value")
+        return {"status": "ok", "field": field, "value": self.state[field]}
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """Simulate a read operation, returning canned data."""

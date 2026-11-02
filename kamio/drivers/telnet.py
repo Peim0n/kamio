@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Union
 
-from .base import BaseDriver
+from .base import BYTE_TRANSPORT_COMMANDS, BaseDriver, require_payload
+
+
+def _frame(payload: Union[str, bytes]) -> bytes:
+    """Encode ``payload`` as one newline-terminated line (``b""`` stays empty)."""
+    data = payload.encode() if isinstance(payload, str) else bytes(payload)
+    if data and not data.endswith(b"\n"):
+        data += b"\n"
+    return data
 
 
 class TelnetDriver(BaseDriver):
     """
     Telnet driver for legacy industrial equipment.
+
+    Transport commands: ``send`` / ``request`` with ``params["payload"]``.
     """
+
+    COMMANDS = BYTE_TRANSPORT_COMMANDS
 
     def __init__(
         self,
@@ -70,41 +82,33 @@ class TelnetDriver(BaseDriver):
                 await asyncio.sleep(self._reconnect_delay_base * (2 ** (attempt - 1)))
 
     async def execute(self, command_name: str, params: dict) -> dict:
-        """Send a command over Telnet and read the response."""
-        params = params or {}
-        response = await self._transact(self._build_command(command_name, params), params)
-        return {"status": "ok", "command": command_name, "response": response}
+        """Transport commands: ``send`` (write a line) / ``request`` (write + read a line).
+
+        ``params["payload"]`` (str/bytes) is the line to write; the driver adds
+        the trailing newline and strips the reply.
+        """
+        payload = _frame(require_payload(params, command_name))
+        if command_name == "send":
+            await self._transact(payload, wait_response=False)
+            return {"status": "ok", "command": "send"}
+        response = await self._transact(payload, wait_response=True)
+        return {"status": "ok", "command": "request", "response": response}
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        """Send a query command and read the response over Telnet."""
-        params = params or {}
-        response = await self._transact(self._build_command(field_name, params), params)
+        """Write ``params["payload"]`` (``""`` = pure read) and read one line."""
+        payload = (params or {}).get("payload")
+        if payload is None:
+            raise NotImplementedError("TelnetDriver.read requires params['payload']")
+        response = await self._transact(_frame(payload), wait_response=True)
         return {"status": "ok", "field": field_name, "response": response}
 
-    @staticmethod
-    def _build_command(name: str, params: Dict[str, Any]) -> bytes:
-        """Resolve ``params["command"]`` (default ``name``) plus optional ``value`` to a line.
-
-        An empty command yields ``b""`` and is never written, so callers can
-        perform a pure read by passing ``{"command": ""}``.
-        """
-        cmd = str(params.get("command", name) or "")
-        if not cmd:
-            return b""
-        value = params.get("value")
-        if value is not None:
-            cmd = f"{cmd} {value}"
-        if not cmd.endswith("\n"):
-            cmd += "\n"
-        return cmd.encode()
-
-    async def _transact(self, payload: bytes, params: Dict[str, Any]) -> str:
+    async def _transact(self, payload: bytes, wait_response: bool) -> str:
         """Under the lock: write ``payload`` (if non-empty) and optionally read one line."""
         async with self._lock:  # Prevent concurrent commands
             await self._ensure_connected()
             if payload:
                 await self._write(payload)
-            if params.get("wait_response", True):
+            if wait_response:
                 return await self._read_line()
             return ""
 

@@ -20,6 +20,8 @@ class HTTPDeviceDriver(BaseDriver):
     :class:`BaseDriver`.
     """
 
+    COMMANDS = ("request", "get", "post", "put", "patch", "delete")
+
     def __init__(
         self,
         base_url: str,
@@ -57,27 +59,38 @@ class HTTPDeviceDriver(BaseDriver):
                 self.logger.info("HTTP session closed")
 
     async def read(self, field_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        """Perform an HTTP GET request and return the parsed response."""
+        """GET ``params["path"]`` and return the parsed response."""
         params = params or {}
-        code, result = await self._request("GET", self._build_url(field_name, params))
+        if "path" not in params:
+            raise NotImplementedError("HTTPDeviceDriver.read requires params['path']")
+        code, result = await self._request("GET", self._build_url(params))
         return {"status": "ok", "code": code, "field": field_name, "data": result}
 
     async def execute(self, command_name: str, params: dict) -> dict:
-        """Perform an HTTP request (GET/POST/etc.) and return the parsed response."""
+        """Transport commands: ``get``/``post``/``put``/``patch``/``delete``, or
+        ``request`` with ``params["method"]``.
+
+        ``params``: ``path`` (relative to ``base_url``), ``json`` (dict body),
+        ``data`` (raw body).
+        """
         params = params or {}
-        method = params.get("method", "POST").upper()
-        json_data = params.get("json") if "json" in params else params.get("value")
+        if command_name == "request":
+            method = str(params.get("method", "")).upper()
+            if not method:
+                raise ValueError("'request' requires params['method']")
+        else:
+            method = command_name.upper()
         code, result = await self._request(
             method,
-            self._build_url(command_name, params),
+            self._build_url(params),
             data=params.get("data"),
-            json=json_data if isinstance(json_data, dict) else None,
+            json=params.get("json"),
         )
         return {"status": "ok", "code": code, "command": command_name, "data": result}
 
-    def _build_url(self, name: str, params: Dict[str, Any]) -> str:
-        """Join ``base_url`` with ``params["path"]`` (default ``name``)."""
-        path = params.get("path", name).lstrip("/")
+    def _build_url(self, params: Dict[str, Any]) -> str:
+        """Join ``base_url`` with ``params["path"]`` (default: ``base_url`` itself)."""
+        path = str(params.get("path", "")).lstrip("/")
         return f"{self.base_url}/{path}" if path else self.base_url
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> tuple[int, Any]:
