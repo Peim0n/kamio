@@ -264,7 +264,13 @@ async def read(field_name, params=None)              # read a value
 
 If a device has a `driver`, `handle_command` and `handle_state` first try to execute through it.
 The driver receives `command_name` and `params` (including `value`), allowing a unified `set_<field>` protocol or passing a command via `params["command"]`.
-`NotImplementedError` in `execute` — fallback to the device method.
+`NotImplementedError` in `execute` — fallback to the device `@command` method (or, for `set_<field>`, the in-memory state update). Any other exception means the driver owns the command and it failed: `handle_command` re-raises it, `handle_state` skips the field.
+
+The contract is enforced by `BaseDriver` itself: every subclass `execute` is wrapped so that a command rejected by `supports_command()` raises `NotImplementedError` before the subclass body runs.
+
+- `ModbusTCPDriver` owns only `write_coil` / `write_register` / `write_registers` (and aliases, optionally `set_`-prefixed); `GPIOChipDriver` owns only `set_output`.
+- Byte-stream transports (`TelnetDriver`, `SerialDriver`, `UDPDriver`, `HTTPDeviceDriver`, `MockHardwareDriver`) pass every command to the wire by default. Pass `commands=[...]` (`fnmatch` patterns, e.g. `["set_*", "power"]`) to restrict them so the rest falls back to the device.
+- Every stock driver accepts `commands=` to narrow its command set further.
 
 ## Asynchrony
 

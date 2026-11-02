@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from .base import BaseDriver
 
@@ -27,8 +27,10 @@ class UDPDriver(BaseDriver):
         port: int,
         timeout: float = 1.0,
         local_port: int = 0,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.host = host
         self.port = port
         self.timeout = timeout

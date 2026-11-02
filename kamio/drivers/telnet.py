@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .base import BaseDriver
 
@@ -12,9 +12,15 @@ class TelnetDriver(BaseDriver):
     """
 
     def __init__(
-        self, host: str, port: int = 23, timeout: float = 5.0, max_reconnect_attempts: int = 3
+        self,
+        host: str,
+        port: int = 23,
+        timeout: float = 5.0,
+        max_reconnect_attempts: int = 3,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.host = host
         self.port = port
         self.timeout = timeout

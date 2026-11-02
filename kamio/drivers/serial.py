@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 try:
     import serial
@@ -57,9 +57,15 @@ class SerialDriver(BaseDriver):
     READ_LIMIT = 4096
 
     def __init__(
-        self, port: str, baudrate: int = 9600, timeout: float = 1.0, read_limit: int = READ_LIMIT
+        self,
+        port: str,
+        baudrate: int = 9600,
+        timeout: float = 1.0,
+        read_limit: int = READ_LIMIT,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout

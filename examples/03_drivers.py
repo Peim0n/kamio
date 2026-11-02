@@ -256,6 +256,8 @@ async def main():
     # Создаём mock-драйвер для климат-контроллера.
     # initial_state задаёт значения, которые драйвер будет возвращать
     # при read() для полей telemetry.
+    # commands=["set_*"] — драйвер обслуживает только set_<field>; остальные
+    # команды (emergency_stop) получают NotImplementedError и уходят в @command.
     climate_driver = MockHardwareDriver(
         latency_range=(0.01, 0.05),
         failure_rate=0.0,
@@ -263,6 +265,7 @@ async def main():
             "temperature": 22.3,
             "humidity": 48.0,
         },
+        commands=["set_*"],
     )
 
     # Регистрируем устройство, передавая драйвер в конструктор.
@@ -292,7 +295,7 @@ async def main():
 
     # --- Вызов команды через handle_command ---
     # handle_command сначала пытается выполнить команду через драйвер
-    # (driver.execute(method_name, params)), затем через @command-метод.
+    # (driver.execute(method_name, params)); на NotImplementedError — через @command-метод.
     result = await climate.handle_command("emergency_stop", {})
     logger.info(f"Команда emergency_stop: {result}")
 
@@ -373,6 +376,7 @@ async def demo_driver_execute_via_handle_command():
         latency_range=(0.01, 0.03),
         failure_rate=0.0,
         initial_state={"temperature": 20.0},
+        commands=["set_*"],
     )
     device = ClimateController(driver=driver)
     await driver.connect()
@@ -385,11 +389,10 @@ async def demo_driver_execute_via_handle_command():
     logger.info(f"Драйвер state: fan_speed={driver.state.get('fan_speed')}")
 
     # handle_command("emergency_stop", {})
-    # Драйвер не знает команду "emergency_stop" → NotImplementedError.
-    # Но MockHardwareDriver не вызывает NotImplementedError — он возвращает
-    # mock_success. В реальном драйвере, если метод не реализован,
-    # будет NotImplementedError и фреймворк вызовет @command-метод.
-    # Здесь emergency_stop — это @command-метод, который вызывается после драйвера.
+    # "emergency_stop" не подходит под commands=["set_*"] → BaseDriver кидает
+    # NotImplementedError до тела execute() → вызывается @command-метод устройства.
+    # Без commands= транспортные драйверы (Mock/Telnet/Serial/UDP/HTTP) работают
+    # в сквозном режиме и принимают любую команду сами.
     result = await device.handle_command("emergency_stop", {})
     logger.info(f"handle_command('emergency_stop'): {result}")
     logger.info(f"Устройство после emergency_stop: relay_on={device.relay_on}, fan_speed={device.fan_speed}")

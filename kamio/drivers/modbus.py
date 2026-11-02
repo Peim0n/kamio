@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
-from typing import Any, List, Optional, Union
+from typing import Any, Iterable, List, Optional, Union
 
 from .base import BaseDriver
 
@@ -24,6 +24,9 @@ _MAX_MBAP_LENGTH = 260  # 253 PDU + 1 unit id + small safety margin
 # Per the Modbus specification, function 0x10 (Write Multiple Registers)
 # accepts at most 123 registers per request.
 _MAX_WRITE_REGISTERS = 123
+_WRITE_COMMANDS = frozenset(
+    {"write_coil", "coil", "write_register", "register", "holding", "write_registers", "registers"}
+)
 
 
 class ModbusTCPDriver(BaseDriver):
@@ -47,8 +50,10 @@ class ModbusTCPDriver(BaseDriver):
         unit_id: int = 1,
         timeout: float = 1.0,
         reconnect_attempts: int = 1,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.host = host
         self.port = port
         self.unit_id = unit_id
@@ -113,17 +118,24 @@ class ModbusTCPDriver(BaseDriver):
         result = await self._read_type(command_type, address, count)
         return {"status": "ok", "field": field_name, "address": address, "data": result}
 
+    def supports_command(self, command_name: str) -> bool:
+        """Only Modbus write commands (optionally ``set_``-prefixed) belong to this driver."""
+        if command_name.removeprefix("set_") not in _WRITE_COMMANDS:
+            return False
+        return super().supports_command(command_name)
+
     async def execute(self, command_name: str, params: dict) -> Any:
         """
         Write a Modbus coil or register.
 
         command_name: write_coil, write_register, write_registers (or set_*).
+        Any other command raises ``NotImplementedError`` (device fallback).
         params keys:
             - address: int
             - value: bool/int for single coil/register
             - values: List[int] for write_registers
         """
-        command = command_name.replace("set_", "")
+        command = command_name.removeprefix("set_")
         address = int(params.get("address", 0))
         value = params.get("value")
         values = params.get("values")
@@ -139,8 +151,8 @@ class ModbusTCPDriver(BaseDriver):
         elif command in ("write_registers", "registers"):
             payload = [int(v) for v in (values or [value])]
             await self._write_multiple_registers(address, payload)
-        else:
-            raise ValueError(f"Unsupported Modbus command: {command_name}")
+        else:  # pragma: no cover - unreachable, rejected by supports_command
+            raise NotImplementedError(f"Unsupported Modbus command: {command_name}")
 
         return {"status": "ok", "address": address, "value": value}
 

@@ -2,6 +2,16 @@
 
 All notable changes to Kamio will be documented in this file.
 
+## [1.0.1b2] - 2026-11-02
+
+### Changed
+- **Driver dispatch contract enforced by `BaseDriver`** — every subclass `execute` is wrapped so a command rejected by the new `supports_command()` raises `NotImplementedError` before the subclass body runs; `Device.handle_command` / `handle_state` then fall back to the `@command` method / in-memory state as documented. Custom drivers get this automatically.
+- **`commands=` allowlist on every stock driver** (keyword-only, `fnmatch` patterns, e.g. `commands=["set_*"]`). Telnet/Serial/UDP/HTTP/Mock still pass every command through when it is omitted.
+
+### Fixed
+- **`ModbusTCPDriver`** — unknown commands raised `ValueError`, so device `@command`s (all four in `examples/11_modbus_device.py`) and `handle_state` never ran; they now raise `NotImplementedError`. `set_` prefix is stripped with `removeprefix` instead of `replace`.
+- **`GPIOChipDriver`** — foreign commands hit the "not connected" / "`pin` is required" checks (`RuntimeError`/`ValueError`) before `NotImplementedError`; the command name is now checked first.
+
 ## [1.0.1b1] - 2026-11-01
 
 ### Added

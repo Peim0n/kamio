@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .base import BaseDriver
 
@@ -25,8 +25,10 @@ class MockHardwareDriver(BaseDriver):
         latency_range: tuple = (0.01, 0.1),
         failure_rate: float = 0.0,
         initial_state: Optional[Dict[str, Any]] = None,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.latency_range = latency_range
         self.failure_rate = failure_rate
         self.state = initial_state or {}

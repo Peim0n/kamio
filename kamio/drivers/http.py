@@ -5,7 +5,7 @@ try:
 except ImportError:
     aiohttp = None  # type: ignore
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .base import BaseDriver
 
@@ -21,9 +21,14 @@ class HTTPDeviceDriver(BaseDriver):
     """
 
     def __init__(
-        self, base_url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 10.0
+        self,
+        base_url: str,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: float = 10.0,
+        *,
+        commands: Optional[Iterable[str]] = None,
     ):
-        super().__init__()
+        super().__init__(commands=commands)
         self.base_url = base_url.rstrip("/")
         self.headers = headers or {}
         self.timeout = timeout
